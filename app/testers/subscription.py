@@ -79,17 +79,30 @@ class SubscriptionTester:
 
             # Test links if requested
             if test_links and vless_links:
-                if self.vless_tester is None:
-                    self.vless_tester = VLESSTester()
+                try:
+                    if self.vless_tester is None:
+                        self.vless_tester = VLESSTester()
 
-                links_to_test = vless_links[:max_links]
-                tested = []
+                    links_to_test = vless_links[:max_links] if max_links > 0 else vless_links
+                    tested = []
 
-                for link in links_to_test:
-                    test_result = self.vless_tester.test(link, timeout=15)
-                    tested.append(test_result)
+                    logger.info(f"Testing {len(links_to_test)} VLESS links...")
+                    for i, link in enumerate(links_to_test, 1):
+                        logger.info(f"Testing link {i}/{len(links_to_test)}...")
+                        test_result = self.vless_tester.test(link, timeout=15)
+                        tested.append(test_result)
 
-                result["tested_links"] = tested
+                    result["tested_links"] = tested
+                except ImportError as e:
+                    logger.error(f"VLESS tester import error: {e}")
+                    result["error"] = str(e)
+                    result["success"] = False
+                    return result
+                except Exception as e:
+                    logger.error(f"VLESS link testing failed: {e}")
+                    result["error"] = f"VLESS testing failed: {str(e)[:200]}"
+                    # Still return success for subscription fetch, just mark tested_links as None
+                    result["tested_links"] = None
 
             result["success"] = True
 

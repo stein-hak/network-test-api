@@ -29,6 +29,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ ./app/
 
+# Copy vless-tester submodule
+COPY vless-tester/ ./vless-tester/
+
 # Create empty __init__.py
 RUN touch /app/__init__.py
 
