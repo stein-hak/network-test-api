@@ -1,0 +1,3 @@
+[submodule "vless-tester"]
+	path = vless-tester
+	url = https://github.com/stein-hak/vless-tester.git

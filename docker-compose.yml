@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  network-test-api:
+    build: .
+    container_name: network-test-api
+    ports:
+      - "8000:8000"
+    environment:
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+    volumes:
+      # Mount vless-tester for integration
+      - /home/stein/python/vless-tester:/vless-tester:ro
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
