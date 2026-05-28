@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # Orchestrator - coordinates testing across all workers
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile-multi-network
+    container_name: network-test-orchestrator
+    network_mode: "host"
+    environment:
+      - ROLE=orchestrator
+      - PORT=8000
+      - WORKERS=http://127.0.0.1:8001,http://127.0.0.1:8002,http://127.0.0.1:8003,http://127.0.0.1:8004
+      - DATABASE_URL=sqlite:////data/test_tasks.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./vless-tester:/app/vless-tester:ro
+      - ./data:/data
+    restart: unless-stopped
+    depends_on:
+      - worker-ethernet
+      - worker-tele2
+      - worker-mts
+      - worker-usb
+
+  # Worker 1: Default Ethernet (Primary)
+  worker-ethernet:
+    build:
+      context: .
+      dockerfile: Dockerfile-multi-network
+    container_name: network-test-worker-ethernet
+    network_mode: "host"
+    environment:
+      - ROLE=worker
+      - PORT=8001
+      - NETWORK_NAME=ethernet
+      - DATABASE_URL=sqlite:////data/worker_ethernet.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./vless-tester:/app/vless-tester:ro
+      - ./data:/data
+    restart: unless-stopped
+
+  # Worker 2: Tele2 Mobile
+  worker-tele2:
+    build:
+      context: .
+      dockerfile: Dockerfile-multi-network
+    container_name: network-test-worker-tele2
+    network_mode: "host"
+    environment:
+      - ROLE=worker
+      - PORT=8002
+      - BIND_IP=192.168.11.178
+      - NETWORK_NAME=tele2
+      - DATABASE_URL=sqlite:////data/worker_tele2.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./vless-tester:/app/vless-tester:ro
+      - ./data:/data
+    restart: unless-stopped
+
+  # Worker 3: MTS Mobile
+  worker-mts:
+    build:
+      context: .
+      dockerfile: Dockerfile-multi-network
+    container_name: network-test-worker-mts
+    network_mode: "host"
+    environment:
+      - ROLE=worker
+      - PORT=8003
+      - BIND_IP=192.168.12.178
+      - NETWORK_NAME=mts
+      - DATABASE_URL=sqlite:////data/worker_mts.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./vless-tester:/app/vless-tester:ro
+      - ./data:/data
+    restart: unless-stopped
+
+  # Worker 4: USB Adapter
+  worker-usb:
+    build:
+      context: .
+      dockerfile: Dockerfile-multi-network
+    container_name: network-test-worker-usb
+    network_mode: "host"
+    environment:
+      - ROLE=worker
+      - PORT=8004
+      - BIND_IP=192.168.10.178
+      - NETWORK_NAME=usb
+      - DATABASE_URL=sqlite:////data/worker_usb.db
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./vless-tester:/app/vless-tester:ro
+      - ./data:/data
+    restart: unless-stopped

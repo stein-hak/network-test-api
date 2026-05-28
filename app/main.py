@@ -3,17 +3,24 @@
 Network Test API - REST API for testing connectivity, SSL, and VLESS links
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from typing import Optional, Dict, List
 import logging
 from datetime import datetime
+import threading
+import os
+import requests as requests_lib
 
 from app.testers.connectivity import ConnectivityTester
 from app.testers.ssl_checker import SSLChecker
 from app.testers.vless_tester import VLESSTester
 from app.testers.subscription import SubscriptionTester
+from app.database import get_db, TestTask, ScheduledTest
+from app.tasks import create_task, get_task, execute_task
+from app.scheduler import init_scheduler, create_scheduled_test, get_scheduler_status, shutdown_scheduler
+from sqlalchemy.orm import Session
 
 # Setup logging
 logging.basicConfig(
@@ -37,6 +44,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize scheduler on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize scheduler when app starts"""
+    init_scheduler()
+    logger.info("Application started with scheduler")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Shutdown scheduler when app stops"""
+    shutdown_scheduler()
+    logger.info("Application shutdown")
 
 # Request/Response models
 class ConnectivityTestRequest(BaseModel):
@@ -116,14 +136,27 @@ async def root():
     """API root - health check"""
     return {
         "service": "Network Test API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "running",
+        "features": ["sync_tests", "async_tasks", "scheduled_tests"],
         "endpoints": {
-            "connectivity": "/test/connectivity",
-            "ssl": "/test/ssl",
-            "vless": "/test/vless",
-            "subscription": "/test/subscription",
-            "batch": "/test/batch"
+            "sync": {
+                "connectivity": "/test/connectivity",
+                "ssl": "/test/ssl",
+                "vless": "/test/vless",
+                "subscription": "/test/subscription",
+                "batch": "/test/batch"
+            },
+            "async": {
+                "submit_subscription": "/test/subscription/async",
+                "get_task": "/tasks/{task_id}",
+                "list_tasks": "/tasks?status=completed&limit=50"
+            },
+            "scheduled": {
+                "create_subscription": "/scheduled/subscription",
+                "list_scheduled": "/scheduled",
+                "scheduler_status": "/scheduler/status"
+            }
         }
     }
 
@@ -131,6 +164,45 @@ async def root():
 async def health():
     """Health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+@app.get("/myip")
+async def get_my_ip():
+    """
+    Get this worker's outbound IP address (like curl ifconfig.me)
+
+    - Tests actual outbound IP by querying external service
+    - Useful for verifying network binding is working correctly
+    """
+    try:
+        # Try multiple IP check services for redundancy
+        services = [
+            "https://ifconfig.me",
+            "https://api.ipify.org",
+            "https://icanhazip.com"
+        ]
+
+        for service in services:
+            try:
+                response = requests_lib.get(service, timeout=5)
+                if response.status_code == 200:
+                    external_ip = response.text.strip()
+                    return {
+                        "success": True,
+                        "external_ip": external_ip,
+                        "service": service,
+                        "network_name": os.getenv("NETWORK_NAME", "unknown"),
+                        "bind_ip": os.getenv("BIND_IP", "0.0.0.0"),
+                        "port": os.getenv("PORT", "8000"),
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+            except:
+                continue
+
+        return {"success": False, "error": "All IP check services failed"}
+
+    except Exception as e:
+        logger.error(f"Failed to get external IP: {e}")
+        return {"success": False, "error": str(e)}
 
 @app.post("/test/connectivity", response_model=ConnectivityTestResponse)
 async def test_connectivity(request: ConnectivityTestRequest):
@@ -263,6 +335,228 @@ async def test_subscription(request: SubscriptionTestRequest):
         error=result.get("error"),
         timestamp=datetime.utcnow().isoformat()
     )
+
+@app.post("/test/subscription/async")
+async def test_subscription_async(
+    request: SubscriptionTestRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Submit subscription test as async task
+
+    - Returns task_id immediately
+    - Test runs in background
+    - Poll /tasks/{task_id} for results
+
+    This is useful for testing subscriptions with many links (slow)
+    """
+    logger.info(f"Creating async subscription test task for {request.subscription_url}")
+
+    # Get client info
+    client_ip = http_request.client.host if http_request.client else "Unknown"
+    user_agent = http_request.headers.get("User-Agent", "Unknown")
+
+    # Create task
+    task_id = create_task(
+        task_type="subscription",
+        request_data={
+            "subscription_url": request.subscription_url,
+            "timeout": request.timeout,
+            "test_vless_links": request.test_vless_links,
+            "max_links_to_test": request.max_links_to_test
+        },
+        db=db,
+        client_ip=client_ip,
+        user_agent=user_agent
+    )
+
+    # Execute task in background thread
+    thread = threading.Thread(target=execute_task, args=(task_id,), daemon=True)
+    thread.start()
+
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "message": "Task submitted. Poll /tasks/{task_id} for results."
+    }
+
+@app.get("/tasks/{task_id}")
+async def get_task_status(task_id: str, db: Session = Depends(get_db)):
+    """
+    Get status and results of an async task
+
+    - Returns current status: pending, running, completed, failed
+    - Returns results when completed
+    - Returns error message if failed
+    """
+    task_data = get_task(task_id, db)
+
+    if not task_data:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return task_data
+
+@app.get("/tasks")
+async def list_tasks(
+    status: Optional[str] = None,
+    task_type: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    List recent tasks
+
+    - Optional filters: status, task_type
+    - Returns up to 'limit' most recent tasks
+    """
+    query = db.query(TestTask)
+
+    if status:
+        query = query.filter(TestTask.status == status)
+
+    if task_type:
+        query = query.filter(TestTask.task_type == task_type)
+
+    tasks = query.order_by(TestTask.created_at.desc()).limit(limit).all()
+
+    return {
+        "count": len(tasks),
+        "tasks": [
+            {
+                "task_id": task.id,
+                "task_type": task.task_type,
+                "status": task.status,
+                "created_at": task.created_at.isoformat(),
+                "completed_at": task.completed_at.isoformat() if task.completed_at else None
+            }
+            for task in tasks
+        ]
+    }
+
+@app.post("/scheduled/subscription")
+async def create_scheduled_subscription_test(
+    name: str,
+    subscription_url: str,
+    interval_hours: Optional[int] = None,
+    cron_expression: Optional[str] = None,
+    test_vless_links: bool = False,
+    max_links_to_test: int = 0,
+    enabled: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a scheduled subscription test
+
+    - Runs automatically on schedule (interval or cron)
+    - interval_hours: Test every N hours (e.g., 6 for every 6 hours)
+    - cron_expression: Cron format (e.g., "0 */6 * * *" for every 6 hours)
+    - Use either interval_hours OR cron_expression, not both
+    """
+    if not interval_hours and not cron_expression:
+        raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
+
+    if interval_hours and cron_expression:
+        raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
+
+    schedule_type = "interval" if interval_hours else "cron"
+
+    scheduled_id = create_scheduled_test(
+        name=name,
+        task_type="subscription",
+        request_data={
+            "subscription_url": subscription_url,
+            "timeout": 10,
+            "test_vless_links": test_vless_links,
+            "max_links_to_test": max_links_to_test
+        },
+        schedule_type=schedule_type,
+        interval_hours=interval_hours,
+        cron_expression=cron_expression,
+        enabled=enabled
+    )
+
+    return {
+        "scheduled_id": scheduled_id,
+        "name": name,
+        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
+        "enabled": enabled,
+        "message": "Scheduled test created successfully"
+    }
+
+@app.get("/scheduled")
+async def list_scheduled_tests(db: Session = Depends(get_db)):
+    """List all scheduled tests"""
+    tests = db.query(ScheduledTest).order_by(ScheduledTest.created_at.desc()).all()
+
+    return {
+        "count": len(tests),
+        "scheduled_tests": [
+            {
+                "id": st.id,
+                "name": st.name,
+                "task_type": st.task_type,
+                "enabled": st.enabled,
+                "schedule": f"every {st.interval_hours}h" if st.interval_hours else st.cron_expression,
+                "last_run": st.last_run_at.isoformat() if st.last_run_at else None,
+                "run_count": st.run_count
+            }
+            for st in tests
+        ]
+    }
+
+@app.get("/scheduler/status")
+async def scheduler_status():
+    """Get scheduler status and active jobs"""
+    return get_scheduler_status()
+
+@app.get("/orchestrator/check-all-ips")
+async def check_all_worker_ips():
+    """
+    Orchestrator endpoint: Check outbound IP of all workers
+
+    - Queries all 4 workers' /myip endpoints
+    - Returns aggregated results showing which network each worker uses
+    - Useful for verifying multi-network setup is working correctly
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    workers = workers_env.split(",")
+    results = []
+
+    for worker_url in workers:
+        worker_url = worker_url.strip()
+        try:
+            response = requests_lib.get(f"{worker_url}/myip", timeout=10)
+            if response.status_code == 200:
+                results.append({
+                    "worker_url": worker_url,
+                    "success": True,
+                    "data": response.json()
+                })
+            else:
+                results.append({
+                    "worker_url": worker_url,
+                    "success": False,
+                    "error": f"HTTP {response.status_code}"
+                })
+        except Exception as e:
+            results.append({
+                "worker_url": worker_url,
+                "success": False,
+                "error": str(e)
+            })
+
+    return {
+        "total_workers": len(workers),
+        "successful": sum(1 for r in results if r["success"]),
+        "failed": sum(1 for r in results if not r["success"]),
+        "results": results,
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 @app.post("/test/batch")
 async def test_batch(request: BatchTestRequest, background_tasks: BackgroundTasks):
