@@ -22,6 +22,7 @@ from app.testers.subscription import SubscriptionTester
 from app.database import get_db, TestTask, ScheduledTest
 from app.tasks import create_task, get_task, execute_task
 from app.scheduler import init_scheduler, create_scheduled_test, get_scheduler_status, shutdown_scheduler
+from app.job_manager import get_job_manager
 from sqlalchemy.orm import Session
 
 # Setup logging
@@ -805,6 +806,176 @@ async def test_batch(request: BatchTestRequest, background_tasks: BackgroundTask
         "results": results,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+# ===== ASYNC JOB ENDPOINTS =====
+
+@app.post("/orchestrator/test/vless/async")
+async def orchestrator_test_vless_async(request: VLESSTestRequest, background_tasks: BackgroundTasks):
+    """
+    Orchestrator endpoint: Submit async VLESS test job
+
+    - Creates a job and returns job_id immediately
+    - Tests run in background across all workers
+    - Use /orchestrator/job/{job_id} to poll status
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set")
+
+    job_manager = get_job_manager()
+
+    # Create job
+    job_id = job_manager.create_job(
+        job_type="vless_test",
+        params={
+            "vless_url": request.vless_url,
+            "timeout": request.timeout,
+            "test_url": request.test_url
+        }
+    )
+
+    # Submit job to background processing
+    background_tasks.add_task(process_vless_job, job_id, request, workers_env.split(","))
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job submitted successfully"
+    }
+
+@app.get("/orchestrator/job/{job_id}")
+async def get_job_status(job_id: str):
+    """
+    Get status of an async job
+
+    - Returns current status, progress, and results
+    - Job data expires after 1 hour
+    """
+    job_manager = get_job_manager()
+    job_data = job_manager.get_job(job_id)
+
+    if job_data is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+
+    return job_data
+
+@app.post("/worker/job/vless")
+async def worker_process_vless_job(request: Dict, background_tasks: BackgroundTasks):
+    """
+    Worker endpoint: Process VLESS test job with Redis state updates
+
+    - Accepts job_id and test params
+    - Processes test in background
+    - Updates job state in Redis
+    """
+    job_id = request.get("job_id")
+    vless_url = request.get("vless_url")
+    timeout = request.get("timeout", 20)
+    test_url = request.get("test_url", "https://httpbin.org/get")
+
+    if not job_id or not vless_url:
+        raise HTTPException(status_code=400, detail="job_id and vless_url required")
+
+    job_manager = get_job_manager()
+
+    # Update job to running
+    job_manager.update_job(job_id, status="running", progress=0)
+
+    # Process in background
+    background_tasks.add_task(process_worker_vless_test, job_id, vless_url, timeout, test_url)
+
+    return {"status": "accepted", "job_id": job_id}
+
+# Background task functions
+
+async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: List[str]):
+    """Background task to process VLESS test across all workers"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=10)
+
+        results = []
+        total_workers = len(workers)
+
+        for idx, worker_url in enumerate(workers):
+            worker_url = worker_url.strip()
+            try:
+                # Submit job to worker
+                response = requests_lib.post(
+                    f"{worker_url}/worker/job/vless",
+                    json={
+                        "job_id": f"{job_id}_{idx}",
+                        "vless_url": request.vless_url,
+                        "timeout": request.timeout,
+                        "test_url": request.test_url
+                    },
+                    timeout=5
+                )
+
+                if response.status_code == 200:
+                    results.append({
+                        "worker_url": worker_url,
+                        "status": "submitted",
+                        "worker_job_id": f"{job_id}_{idx}"
+                    })
+                else:
+                    results.append({
+                        "worker_url": worker_url,
+                        "status": "failed",
+                        "error": f"HTTP {response.status_code}"
+                    })
+            except Exception as e:
+                results.append({
+                    "worker_url": worker_url,
+                    "status": "failed",
+                    "error": str(e)
+                })
+
+            # Update progress
+            progress = int(((idx + 1) / total_workers) * 90) + 10
+            job_manager.update_job(job_id, progress=progress)
+
+        # Mark as completed
+        job_manager.update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            result={
+                "total_workers": total_workers,
+                "submitted": sum(1 for r in results if r.get("status") == "submitted"),
+                "results": results
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_worker_vless_test(job_id: str, vless_url: str, timeout: int, test_url: str):
+    """Background task for worker to process VLESS test and update Redis"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=25)
+
+        # Run the actual test
+        tester = VLESSTester()
+        result = tester.test(vless_url, timeout, test_url)
+
+        job_manager.update_job(job_id, progress=75)
+
+        # Store result
+        job_manager.update_job(
+            job_id,
+            status="completed",
+            progress=100,
+            result=result
+        )
+
+    except Exception as e:
+        logger.error(f"Error in worker job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
 
 if __name__ == "__main__":
     import uvicorn
