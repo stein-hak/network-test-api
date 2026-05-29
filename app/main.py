@@ -12,6 +12,8 @@ from datetime import datetime
 import threading
 import os
 import requests as requests_lib
+from requests.adapters import HTTPAdapter
+from urllib3.util.connection import create_connection
 
 from app.testers.connectivity import ConnectivityTester
 from app.testers.ssl_checker import SSLChecker
@@ -28,6 +30,40 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Custom HTTPAdapter to bind to specific source IP
+class SourceAddressAdapter(HTTPAdapter):
+    def __init__(self, source_address, **kwargs):
+        self.source_address = source_address
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["source_address"] = (self.source_address, 0)
+        return super().init_poolmanager(*args, **kwargs)
+
+# Global session with source binding
+_global_session = None
+
+def configure_requests_source_binding():
+    """Configure requests library to bind to specific source IP from environment"""
+    global _global_session
+    bind_ip = os.getenv("BIND_IP", "0.0.0.0")
+
+    if bind_ip and bind_ip != "0.0.0.0":
+        logger.info(f"Configuring requests to bind to source IP: {bind_ip}")
+        # Create session with source address adapter
+        _global_session = requests_lib.Session()
+        adapter = SourceAddressAdapter(bind_ip)
+        _global_session.mount("http://", adapter)
+        _global_session.mount("https://", adapter)
+        logger.info(f"Requests library configured to use source IP: {bind_ip}")
+    else:
+        logger.info("No source IP binding configured (using default routing)")
+        _global_session = requests_lib.Session()
+
+def get_requests_session():
+    """Get the configured requests session"""
+    return _global_session if _global_session else requests_lib
 
 # Create FastAPI app
 app = FastAPI(
@@ -49,6 +85,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Initialize scheduler when app starts"""
+    configure_requests_source_binding()
     init_scheduler()
     logger.info("Application started with scheduler")
 
@@ -162,8 +199,34 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    """
+    Health check endpoint - tests if THIS network interface can reach the internet
+
+    - Uses configured source IP binding (BIND_IP) to test specific network
+    - Returns network_ok=true if can reach external service, false otherwise
+    - Useful for distinguishing "VLESS blocked" vs "network down"
+    """
+    bind_ip = os.getenv("BIND_IP", "0.0.0.0")
+    network_name = os.getenv("NETWORK_NAME", "default")
+
+    result = {
+        "status": "healthy",
+        "network_name": network_name,
+        "bind_ip": bind_ip if bind_ip != "0.0.0.0" else None,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    # Test network connectivity through this specific interface
+    try:
+        session = get_requests_session()
+        response = session.get("https://1.1.1.1", timeout=5)
+        result["network_ok"] = response.status_code == 200
+        result["network_test"] = "success"
+    except Exception as e:
+        result["network_ok"] = False
+        result["network_test"] = f"failed: {str(e)}"
+
+    return result
 
 @app.get("/myip")
 async def get_my_ip():
@@ -174,6 +237,9 @@ async def get_my_ip():
     - Useful for verifying network binding is working correctly
     """
     try:
+        # Get the configured requests session
+        session = get_requests_session()
+
         # Try multiple IP check services for redundancy
         services = [
             "https://ifconfig.me",
@@ -183,7 +249,7 @@ async def get_my_ip():
 
         for service in services:
             try:
-                response = requests_lib.get(service, timeout=5)
+                response = session.get(service, timeout=5)
                 if response.status_code == 200:
                     external_ip = response.text.strip()
                     return {

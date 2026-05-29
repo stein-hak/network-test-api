@@ -11,7 +11,7 @@ services:
     environment:
       - ROLE=orchestrator
       - PORT=8000
-      - WORKERS=http://127.0.0.1:8001,http://127.0.0.1:8002,http://127.0.0.1:8003,http://127.0.0.1:8004
+      - WORKERS=http://127.0.0.1:8001,http://192.168.11.178:8002,http://192.168.12.178:8003,http://192.168.10.178:8004
       - DATABASE_URL=sqlite:////data/test_tasks.db
       - LOG_LEVEL=INFO
     volumes:
@@ -24,7 +24,7 @@ services:
       - worker-mts
       - worker-usb
 
-  # Worker 1: Default Ethernet (Primary)
+  # Worker 1: Default Ethernet (Primary) - uses default route
   worker-ethernet:
     build:
       context: .
@@ -42,13 +42,16 @@ services:
       - ./data:/data
     restart: unless-stopped
 
-  # Worker 2: Tele2 Mobile
+  # Worker 2: Tele2 Mobile - binds to tele2 interface IP
   worker-tele2:
     build:
       context: .
       dockerfile: Dockerfile-multi-network
     container_name: network-test-worker-tele2
+    hostname: worker-tele2
     network_mode: "host"
+    cap_add:
+      - NET_ADMIN
     environment:
       - ROLE=worker
       - PORT=8002
@@ -59,15 +62,25 @@ services:
     volumes:
       - ./vless-tester:/app/vless-tester:ro
       - ./data:/data
+    command: >
+      sh -c "
+        ip rule add from 192.168.11.178 table 100 2>/dev/null || true &&
+        ip route add default via 192.168.11.1 dev modem-tele2 table 100 2>/dev/null || true &&
+        ip route flush cache &&
+        /entrypoint.sh
+      "
     restart: unless-stopped
 
-  # Worker 3: MTS Mobile
+  # Worker 3: MTS Mobile - binds to mts interface IP
   worker-mts:
     build:
       context: .
       dockerfile: Dockerfile-multi-network
     container_name: network-test-worker-mts
+    hostname: worker-mts
     network_mode: "host"
+    cap_add:
+      - NET_ADMIN
     environment:
       - ROLE=worker
       - PORT=8003
@@ -78,15 +91,25 @@ services:
     volumes:
       - ./vless-tester:/app/vless-tester:ro
       - ./data:/data
+    command: >
+      sh -c "
+        ip rule add from 192.168.12.178 table 101 2>/dev/null || true &&
+        ip route add default via 192.168.12.1 dev modem-mts table 101 2>/dev/null || true &&
+        ip route flush cache &&
+        /entrypoint.sh
+      "
     restart: unless-stopped
 
-  # Worker 4: USB Adapter
+  # Worker 4: USB Adapter - binds to USB interface IP
   worker-usb:
     build:
       context: .
       dockerfile: Dockerfile-multi-network
     container_name: network-test-worker-usb
+    hostname: worker-usb
     network_mode: "host"
+    cap_add:
+      - NET_ADMIN
     environment:
       - ROLE=worker
       - PORT=8004
@@ -97,4 +120,13 @@ services:
     volumes:
       - ./vless-tester:/app/vless-tester:ro
       - ./data:/data
+    command: >
+      sh -c "
+        ip rule add from 192.168.10.178 table 102 2>/dev/null || true &&
+        ip route add default via 192.168.10.1 dev enx344b50000000 table 102 2>/dev/null || true &&
+        ip route flush cache &&
+        /entrypoint.sh
+      "
     restart: unless-stopped
+
+# No custom networks needed - all containers use host network

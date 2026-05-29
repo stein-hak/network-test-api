@@ -8,10 +8,17 @@ services:
       - "8000:8000"
     environment:
       - LOG_LEVEL=INFO
+      - DATABASE_URL=sqlite:////data/test_tasks.db
     restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     volumes:
-      # Mount vless-tester for integration
-      - /home/stein/python/vless-tester:/vless-tester:ro
+      # Mount vless-tester submodule (relative path)
+      - ./vless-tester:/app/vless-tester:ro
+      # Persist database
+      - ./data:/data
     networks:
       - test-network
 
