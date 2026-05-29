@@ -914,7 +914,8 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
             )
 
         # Use async httpx to submit jobs to all workers
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        # Increased timeout to account for worker startup and Redis operations
+        async with httpx.AsyncClient(timeout=15.0) as client:
             for idx, worker_url in enumerate(workers):
                 worker_url = worker_url.strip()
                 worker_job_id = f"{job_id}_{idx}"
