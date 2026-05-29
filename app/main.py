@@ -624,6 +624,113 @@ async def check_all_worker_ips():
         "timestamp": datetime.utcnow().isoformat()
     }
 
+@app.post("/orchestrator/test/connectivity")
+async def orchestrator_test_connectivity(request: ConnectivityTestRequest):
+    """
+    Orchestrator endpoint: Test connectivity from all workers
+
+    - Distributes connectivity test across all workers
+    - Returns results from each network (Tele2, MTS, MegaFon, Cable)
+    - Useful for comparing connectivity across different networks
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    workers = workers_env.split(",")
+    results = []
+
+    for worker_url in workers:
+        worker_url = worker_url.strip()
+        try:
+            response = requests_lib.post(
+                f"{worker_url}/test/connectivity",
+                json=request.dict(),
+                timeout=request.timeout + 5
+            )
+            if response.status_code == 200:
+                data = response.json()
+                results.append({
+                    "worker_url": worker_url,
+                    "success": True,
+                    "test_result": data
+                })
+            else:
+                results.append({
+                    "worker_url": worker_url,
+                    "success": False,
+                    "error": f"HTTP {response.status_code}"
+                })
+        except Exception as e:
+            results.append({
+                "worker_url": worker_url,
+                "success": False,
+                "error": str(e)
+            })
+
+    return {
+        "test_type": "connectivity",
+        "target": request.target,
+        "total_workers": len(workers),
+        "successful": sum(1 for r in results if r["success"]),
+        "failed": sum(1 for r in results if not r["success"]),
+        "results": results,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.post("/orchestrator/test/vless")
+async def orchestrator_test_vless(request: VLESSTestRequest):
+    """
+    Orchestrator endpoint: Test VLESS from all workers
+
+    - Distributes VLESS test across all workers
+    - Returns results from each network
+    - Useful for checking which networks can connect to VLESS servers
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    workers = workers_env.split(",")
+    results = []
+
+    for worker_url in workers:
+        worker_url = worker_url.strip()
+        try:
+            response = requests_lib.post(
+                f"{worker_url}/test/vless",
+                json=request.dict(),
+                timeout=request.timeout + 10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                results.append({
+                    "worker_url": worker_url,
+                    "success": True,
+                    "test_result": data
+                })
+            else:
+                results.append({
+                    "worker_url": worker_url,
+                    "success": False,
+                    "error": f"HTTP {response.status_code}"
+                })
+        except Exception as e:
+            results.append({
+                "worker_url": worker_url,
+                "success": False,
+                "error": str(e)
+            })
+
+    return {
+        "test_type": "vless",
+        "total_workers": len(workers),
+        "successful": sum(1 for r in results if r["success"]),
+        "failed": sum(1 for r in results if not r["success"]),
+        "results": results,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
 @app.post("/test/batch")
 async def test_batch(request: BatchTestRequest, background_tasks: BackgroundTasks):
     """
