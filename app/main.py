@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 import threading
 import os
+import httpx
 import requests as requests_lib
 from requests.adapters import HTTPAdapter
 from urllib3.util.connection import create_connection
@@ -912,51 +913,48 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                 job_id=worker_job_id
             )
 
-        for idx, worker_url in enumerate(workers):
-            worker_url = worker_url.strip()
-            worker_job_id = f"{job_id}_{idx}"
-            try:
-                # Submit job to worker
-                logger.info(f"Submitting job {worker_job_id} to worker {worker_url}")
-                # Create a new session for each request to avoid connection pool issues
-                session = requests_lib.Session()
-                response = session.post(
-                    f"{worker_url}/worker/job/vless",
-                    json={
-                        "job_id": worker_job_id,
-                        "vless_url": request.vless_url,
-                        "timeout": request.timeout,
-                        "test_url": request.test_url
-                    },
-                    headers={"Connection": "close"},
-                    timeout=5
-                )
-                session.close()
-                logger.info(f"Worker {worker_url} responded with status {response.status_code}")
+        # Use async httpx to submit jobs to all workers
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for idx, worker_url in enumerate(workers):
+                worker_url = worker_url.strip()
+                worker_job_id = f"{job_id}_{idx}"
+                try:
+                    # Submit job to worker
+                    logger.info(f"Submitting job {worker_job_id} to worker {worker_url}")
+                    response = await client.post(
+                        f"{worker_url}/worker/job/vless",
+                        json={
+                            "job_id": worker_job_id,
+                            "vless_url": request.vless_url,
+                            "timeout": request.timeout,
+                            "test_url": request.test_url
+                        }
+                    )
+                    logger.info(f"Worker {worker_url} responded with status {response.status_code}")
 
-                if response.status_code == 200:
-                    results.append({
-                        "worker_url": worker_url,
-                        "status": "submitted",
-                        "worker_job_id": f"{job_id}_{idx}"
-                    })
-                else:
+                    if response.status_code == 200:
+                        results.append({
+                            "worker_url": worker_url,
+                            "status": "submitted",
+                            "worker_job_id": f"{job_id}_{idx}"
+                        })
+                    else:
+                        results.append({
+                            "worker_url": worker_url,
+                            "status": "failed",
+                            "error": f"HTTP {response.status_code}"
+                        })
+                except Exception as e:
+                    logger.error(f"Failed to submit job to worker {worker_url}: {e}")
                     results.append({
                         "worker_url": worker_url,
                         "status": "failed",
-                        "error": f"HTTP {response.status_code}"
+                        "error": str(e)
                     })
-            except Exception as e:
-                logger.error(f"Failed to submit job to worker {worker_url}: {e}")
-                results.append({
-                    "worker_url": worker_url,
-                    "status": "failed",
-                    "error": str(e)
-                })
 
-            # Update progress
-            progress = int(((idx + 1) / total_workers) * 90) + 10
-            job_manager.update_job(job_id, progress=progress)
+                # Update progress
+                progress = int(((idx + 1) / total_workers) * 90) + 10
+                job_manager.update_job(job_id, progress=progress)
 
         # Mark as completed
         job_manager.update_job(
