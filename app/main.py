@@ -920,15 +920,18 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                 worker_job_id = f"{job_id}_{idx}"
                 try:
                     # Submit job to worker
+                    payload = {
+                        "job_id": worker_job_id,
+                        "vless_url": request.vless_url,
+                        "timeout": request.timeout,
+                        "test_url": request.test_url
+                    }
                     logger.info(f"Submitting job {worker_job_id} to worker {worker_url}")
+                    logger.debug(f"Payload: {payload}")
+
                     response = await client.post(
                         f"{worker_url}/worker/job/vless",
-                        json={
-                            "job_id": worker_job_id,
-                            "vless_url": request.vless_url,
-                            "timeout": request.timeout,
-                            "test_url": request.test_url
-                        }
+                        json=payload
                     )
                     logger.info(f"Worker {worker_url} responded with status {response.status_code}")
 
@@ -939,10 +942,12 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                             "worker_job_id": f"{job_id}_{idx}"
                         })
                     else:
+                        response_text = response.text
+                        logger.error(f"Worker {worker_url} returned {response.status_code}: {response_text}")
                         results.append({
                             "worker_url": worker_url,
                             "status": "failed",
-                            "error": f"HTTP {response.status_code}"
+                            "error": f"HTTP {response.status_code}: {response_text}"
                         })
                 except Exception as e:
                     logger.error(f"Failed to submit job to worker {worker_url}: {e}")
