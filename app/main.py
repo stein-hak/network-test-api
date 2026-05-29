@@ -898,14 +898,29 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
         results = []
         total_workers = len(workers)
 
+        # Create all worker sub-jobs in Redis BEFORE distributing
+        for idx, worker_url in enumerate(workers):
+            worker_job_id = f"{job_id}_{idx}"
+            job_manager.create_job(
+                job_type="vless_test_worker",
+                params={
+                    "vless_url": request.vless_url,
+                    "timeout": request.timeout,
+                    "test_url": request.test_url,
+                    "worker_url": worker_url.strip()
+                },
+                job_id=worker_job_id
+            )
+
         for idx, worker_url in enumerate(workers):
             worker_url = worker_url.strip()
+            worker_job_id = f"{job_id}_{idx}"
             try:
                 # Submit job to worker
                 response = requests_lib.post(
                     f"{worker_url}/worker/job/vless",
                     json={
-                        "job_id": f"{job_id}_{idx}",
+                        "job_id": worker_job_id,
                         "vless_url": request.vless_url,
                         "timeout": request.timeout,
                         "test_url": request.test_url

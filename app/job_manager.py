@@ -29,18 +29,22 @@ class JobManager:
         self.redis_client = redis.from_url(redis_url, decode_responses=True)
         self.job_ttl = 3600  # Jobs expire after 1 hour
 
-    def create_job(self, job_type: str, params: Dict[str, Any]) -> str:
+    def create_job(self, job_type: str, params: Dict[str, Any], job_id: Optional[str] = None) -> str:
         """
         Create a new job
 
         Args:
             job_type: Type of job (e.g., 'vless_test', 'connectivity_test')
             params: Job parameters
+            job_id: Optional specific job_id to use (default: auto-generate UUID)
 
         Returns:
             job_id: UUID of created job
         """
-        job_id = str(uuid.uuid4())
+        if job_id is None:
+            job_id = str(uuid.uuid4())
+        else:
+            job_id = str(job_id)
 
         job_data = {
             'job_id': job_id,
