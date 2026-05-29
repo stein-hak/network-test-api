@@ -918,7 +918,9 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
             try:
                 # Submit job to worker
                 logger.info(f"Submitting job {worker_job_id} to worker {worker_url}")
-                response = requests_lib.post(
+                # Create a new session for each request to avoid connection pool issues
+                session = requests_lib.Session()
+                response = session.post(
                     f"{worker_url}/worker/job/vless",
                     json={
                         "job_id": worker_job_id,
@@ -929,6 +931,7 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                     headers={"Connection": "close"},
                     timeout=5
                 )
+                session.close()
                 logger.info(f"Worker {worker_url} responded with status {response.status_code}")
 
                 if response.status_code == 200:
