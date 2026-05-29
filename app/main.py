@@ -926,6 +926,7 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                         "timeout": request.timeout,
                         "test_url": request.test_url
                     },
+                    headers={"Connection": "close"},
                     timeout=5
                 )
                 logger.info(f"Worker {worker_url} responded with status {response.status_code}")
