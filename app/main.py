@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 import threading
 import os
+import asyncio
 import httpx
 import requests as requests_lib
 from requests.adapters import HTTPAdapter
@@ -913,10 +914,12 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                 job_id=worker_job_id
             )
 
-        # Use async httpx to submit jobs to all workers
+        # Use async httpx to submit jobs to all workers in parallel
         # Increased timeout to account for worker startup and Redis operations
         async with httpx.AsyncClient(timeout=15.0) as client:
-            for idx, worker_url in enumerate(workers):
+
+            async def submit_to_worker(idx: int, worker_url: str):
+                """Submit job to a single worker"""
                 worker_url = worker_url.strip()
                 worker_job_id = f"{job_id}_{idx}"
                 try:
@@ -937,30 +940,33 @@ async def process_vless_job(job_id: str, request: VLESSTestRequest, workers: Lis
                     logger.info(f"Worker {worker_url} responded with status {response.status_code}")
 
                     if response.status_code == 200:
-                        results.append({
+                        return {
                             "worker_url": worker_url,
                             "status": "submitted",
-                            "worker_job_id": f"{job_id}_{idx}"
-                        })
+                            "worker_job_id": worker_job_id
+                        }
                     else:
                         response_text = response.text
                         logger.error(f"Worker {worker_url} returned {response.status_code}: {response_text}")
-                        results.append({
+                        return {
                             "worker_url": worker_url,
                             "status": "failed",
                             "error": f"HTTP {response.status_code}: {response_text}"
-                        })
+                        }
                 except Exception as e:
                     logger.error(f"Failed to submit job to worker {worker_url}: {e}")
-                    results.append({
+                    return {
                         "worker_url": worker_url,
                         "status": "failed",
                         "error": str(e)
-                    })
+                    }
 
-                # Update progress
-                progress = int(((idx + 1) / total_workers) * 90) + 10
-                job_manager.update_job(job_id, progress=progress)
+            # Submit to all workers in parallel
+            tasks = [submit_to_worker(idx, worker_url) for idx, worker_url in enumerate(workers)]
+            results = await asyncio.gather(*tasks)
+
+            # Update progress to 100% (all submissions attempted)
+            job_manager.update_job(job_id, progress=100)
 
         # Mark as completed
         job_manager.update_job(
