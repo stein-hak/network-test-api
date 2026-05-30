@@ -1327,7 +1327,8 @@ async def get_job_status(job_id: str):
 
     # If this is an async distributed test job, aggregate worker results
     if job_data.get('job_type') in ['vless_test', 'connectivity_test', 'ssl_test', 'subscription_test']:
-        submission_results = job_data.get('result', {}).get('results', [])
+        result_data = job_data.get('result') or {}
+        submission_results = result_data.get('results', [])
         worker_results = []
 
         for submission in submission_results:
