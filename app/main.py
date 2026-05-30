@@ -1431,10 +1431,10 @@ async def process_subscription_job(job_id: str, request: SubscriptionTestRequest
                     if response.status_code == 200:
                         return {"worker_url": worker_url, "status": "submitted", "worker_job_id": worker_job_id}
                     else:
-                        return {"worker_url": worker_url, "status": "failed", "error": f"HTTP {response.status_code}"}
+                        return {"worker_url": worker_url, "status": "failed", "worker_job_id": worker_job_id, "error": f"HTTP {response.status_code}"}
                 except Exception as e:
                     logger.error(f"Failed to submit job to worker {worker_url}: {e}")
-                    return {"worker_url": worker_url, "status": "failed", "error": str(e)}
+                    return {"worker_url": worker_url, "status": "failed", "worker_job_id": worker_job_id, "error": str(e)}
 
             tasks = [submit_to_worker(idx, worker_url) for idx, worker_url in enumerate(workers)]
             results = await asyncio.gather(*tasks)
