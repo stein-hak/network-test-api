@@ -913,6 +913,41 @@ async def orchestrator_test_ssl_async(request: SSLTestRequest, background_tasks:
         "message": "Job submitted successfully"
     }
 
+@app.post("/orchestrator/test/subscription/async")
+async def orchestrator_test_subscription_async(request: SubscriptionTestRequest, background_tasks: BackgroundTasks):
+    """
+    Orchestrator endpoint: Submit async subscription test job
+
+    - Creates a job and returns job_id immediately
+    - Tests run in background across all workers
+    - Use /orchestrator/job/{job_id} to poll status
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set")
+
+    job_manager = get_job_manager()
+
+    # Create job
+    job_id = job_manager.create_job(
+        job_type="subscription_test",
+        params={
+            "subscription_url": request.subscription_url,
+            "timeout": request.timeout,
+            "test_vless_links": request.test_vless_links,
+            "max_links_to_test": request.max_links_to_test
+        }
+    )
+
+    # Submit job to background processing
+    background_tasks.add_task(process_subscription_job, job_id, request, workers_env.split(","))
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job submitted successfully"
+    }
+
 @app.get("/orchestrator/job/{job_id}")
 async def get_job_status(job_id: str):
     """
@@ -929,7 +964,7 @@ async def get_job_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found or expired")
 
     # If this is an async distributed test job, aggregate worker results
-    if job_data.get('job_type') in ['vless_test', 'connectivity_test', 'ssl_test']:
+    if job_data.get('job_type') in ['vless_test', 'connectivity_test', 'ssl_test', 'subscription_test']:
         submission_results = job_data.get('result', {}).get('results', [])
         worker_results = []
 
@@ -1047,6 +1082,27 @@ async def worker_process_ssl_job(request: Dict, background_tasks: BackgroundTask
     job_manager.update_job(job_id, status="running", progress=0)
 
     background_tasks.add_task(process_worker_ssl_test, job_id, hostname, port)
+
+    return {"status": "accepted", "job_id": job_id}
+
+@app.post("/worker/job/subscription")
+async def worker_process_subscription_job(request: Dict, background_tasks: BackgroundTasks):
+    """
+    Worker endpoint: Process subscription test job with Redis state updates
+    """
+    job_id = request.get("job_id")
+    subscription_url = request.get("subscription_url")
+    timeout = request.get("timeout", 10)
+    test_vless_links = request.get("test_vless_links", False)
+    max_links_to_test = request.get("max_links_to_test", 3)
+
+    if not job_id or not subscription_url:
+        raise HTTPException(status_code=400, detail="job_id and subscription_url required")
+
+    job_manager = get_job_manager()
+    job_manager.update_job(job_id, status="running", progress=0)
+
+    background_tasks.add_task(process_worker_subscription_test, job_id, subscription_url, timeout, test_vless_links, max_links_to_test)
 
     return {"status": "accepted", "job_id": job_id}
 
@@ -1327,6 +1383,92 @@ async def process_worker_ssl_test(job_id: str, hostname: str, port: int):
 
     except Exception as e:
         logger.error(f"Error in worker SSL job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_subscription_job(job_id: str, request: SubscriptionTestRequest, workers: List[str]):
+    """Background task to process subscription test across all workers"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=10)
+
+        results = []
+        total_workers = len(workers)
+
+        # Create all worker sub-jobs in Redis
+        for idx, worker_url in enumerate(workers):
+            worker_job_id = f"{job_id}_{idx}"
+            job_manager.create_job(
+                job_type="subscription_test_worker",
+                params={
+                    "subscription_url": request.subscription_url,
+                    "timeout": request.timeout,
+                    "test_vless_links": request.test_vless_links,
+                    "max_links_to_test": request.max_links_to_test,
+                    "worker_url": worker_url.strip()
+                },
+                job_id=worker_job_id
+            )
+
+        # Submit to all workers in parallel
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            async def submit_to_worker(idx: int, worker_url: str):
+                worker_url = worker_url.strip()
+                worker_job_id = f"{job_id}_{idx}"
+                try:
+                    payload = {
+                        "job_id": worker_job_id,
+                        "subscription_url": request.subscription_url,
+                        "timeout": request.timeout,
+                        "test_vless_links": request.test_vless_links,
+                        "max_links_to_test": request.max_links_to_test
+                    }
+                    logger.info(f"Submitting subscription job {worker_job_id} to worker {worker_url}")
+
+                    response = await client.post(f"{worker_url}/worker/job/subscription", json=payload)
+                    logger.info(f"Worker {worker_url} responded with status {response.status_code}")
+
+                    if response.status_code == 200:
+                        return {"worker_url": worker_url, "status": "submitted", "worker_job_id": worker_job_id}
+                    else:
+                        return {"worker_url": worker_url, "status": "failed", "error": f"HTTP {response.status_code}"}
+                except Exception as e:
+                    logger.error(f"Failed to submit job to worker {worker_url}: {e}")
+                    return {"worker_url": worker_url, "status": "failed", "error": str(e)}
+
+            tasks = [submit_to_worker(idx, worker_url) for idx, worker_url in enumerate(workers)]
+            results = await asyncio.gather(*tasks)
+            job_manager.update_job(job_id, progress=100)
+
+        job_manager.update_job(job_id, status="completed", result={"total_workers": total_workers, "submitted": sum(1 for r in results if r.get("status") == "submitted"), "results": results})
+
+    except Exception as e:
+        logger.error(f"Error processing subscription job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_worker_subscription_test(job_id: str, subscription_url: str, timeout: int, test_vless_links: bool, max_links_to_test: int):
+    """Background task for worker to process subscription test and update Redis"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=25)
+
+        # Run the actual test using existing subscription test logic
+        from app.subscription_test import test_subscription
+        result = test_subscription(
+            subscription_url=subscription_url,
+            timeout=timeout,
+            test_vless_links=test_vless_links,
+            max_links_to_test=max_links_to_test
+        )
+
+        job_manager.update_job(job_id, progress=75)
+
+        # Store result
+        job_manager.update_job(job_id, status="completed", progress=100, result=result)
+
+    except Exception as e:
+        logger.error(f"Error in worker subscription job {job_id}: {e}")
         job_manager.update_job(job_id, status="failed", error=str(e))
 
 if __name__ == "__main__":
