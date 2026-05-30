@@ -899,7 +899,7 @@ async def orchestrator_test_ssl_async(request: SSLTestRequest, background_tasks:
     job_id = job_manager.create_job(
         job_type="ssl_test",
         params={
-            "hostname": request.hostname,
+            "hostname": request.domain,
             "port": request.port
         }
     )
@@ -1248,7 +1248,7 @@ async def process_ssl_job(job_id: str, request: SSLTestRequest, workers: List[st
             job_manager.create_job(
                 job_type="ssl_test_worker",
                 params={
-                    "hostname": request.hostname,
+                    "hostname": request.domain,
                     "port": request.port,
                     "worker_url": worker_url.strip()
                 },
@@ -1263,7 +1263,7 @@ async def process_ssl_job(job_id: str, request: SSLTestRequest, workers: List[st
                 try:
                     payload = {
                         "job_id": worker_job_id,
-                        "hostname": request.hostname,
+                        "hostname": request.domain,
                         "port": request.port
                     }
                     logger.info(f"Submitting SSL job {worker_job_id} to worker {worker_url}")
