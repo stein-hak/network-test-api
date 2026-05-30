@@ -1454,12 +1454,12 @@ async def process_worker_subscription_test(job_id: str, subscription_url: str, t
         job_manager.update_job(job_id, status="running", progress=25)
 
         # Run the actual test using existing subscription test logic
-        from app.subscription_test import test_subscription
-        result = test_subscription(
+        tester = SubscriptionTester()
+        result = tester.test(
             subscription_url=subscription_url,
             timeout=timeout,
-            test_vless_links=test_vless_links,
-            max_links_to_test=max_links_to_test
+            test_links=test_vless_links,
+            max_links=max_links_to_test
         )
 
         job_manager.update_job(job_id, progress=75)
