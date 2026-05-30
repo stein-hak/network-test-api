@@ -845,6 +845,74 @@ async def orchestrator_test_vless_async(request: VLESSTestRequest, background_ta
         "message": "Job submitted successfully"
     }
 
+@app.post("/orchestrator/test/connectivity/async")
+async def orchestrator_test_connectivity_async(request: ConnectivityTestRequest, background_tasks: BackgroundTasks):
+    """
+    Orchestrator endpoint: Submit async connectivity test job
+
+    - Creates a job and returns job_id immediately
+    - Tests run in background across all workers
+    - Use /orchestrator/job/{job_id} to poll status
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set")
+
+    job_manager = get_job_manager()
+
+    # Create job
+    job_id = job_manager.create_job(
+        job_type="connectivity_test",
+        params={
+            "target": request.target,
+            "port": request.port,
+            "timeout": request.timeout,
+            "protocol": request.protocol
+        }
+    )
+
+    # Submit job to background processing
+    background_tasks.add_task(process_connectivity_job, job_id, request, workers_env.split(","))
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job submitted successfully"
+    }
+
+@app.post("/orchestrator/test/ssl/async")
+async def orchestrator_test_ssl_async(request: SSLTestRequest, background_tasks: BackgroundTasks):
+    """
+    Orchestrator endpoint: Submit async SSL test job
+
+    - Creates a job and returns job_id immediately
+    - Tests run in background across all workers
+    - Use /orchestrator/job/{job_id} to poll status
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set")
+
+    job_manager = get_job_manager()
+
+    # Create job
+    job_id = job_manager.create_job(
+        job_type="ssl_test",
+        params={
+            "hostname": request.hostname,
+            "port": request.port
+        }
+    )
+
+    # Submit job to background processing
+    background_tasks.add_task(process_ssl_job, job_id, request, workers_env.split(","))
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job submitted successfully"
+    }
+
 @app.get("/orchestrator/job/{job_id}")
 async def get_job_status(job_id: str):
     """
@@ -860,8 +928,8 @@ async def get_job_status(job_id: str):
     if job_data is None:
         raise HTTPException(status_code=404, detail="Job not found or expired")
 
-    # If this is a vless_test job, aggregate worker results
-    if job_data.get('job_type') == 'vless_test':
+    # If this is an async distributed test job, aggregate worker results
+    if job_data.get('job_type') in ['vless_test', 'connectivity_test', 'ssl_test']:
         submission_results = job_data.get('result', {}).get('results', [])
         worker_results = []
 
@@ -939,6 +1007,46 @@ async def worker_process_vless_job(request: Dict, background_tasks: BackgroundTa
 
     # Process in background
     background_tasks.add_task(process_worker_vless_test, job_id, vless_url, timeout, test_url)
+
+    return {"status": "accepted", "job_id": job_id}
+
+@app.post("/worker/job/connectivity")
+async def worker_process_connectivity_job(request: Dict, background_tasks: BackgroundTasks):
+    """
+    Worker endpoint: Process connectivity test job with Redis state updates
+    """
+    job_id = request.get("job_id")
+    target = request.get("target")
+    port = request.get("port", 443)
+    timeout = request.get("timeout", 10)
+    protocol = request.get("protocol", "https")
+
+    if not job_id or not target:
+        raise HTTPException(status_code=400, detail="job_id and target required")
+
+    job_manager = get_job_manager()
+    job_manager.update_job(job_id, status="running", progress=0)
+
+    background_tasks.add_task(process_worker_connectivity_test, job_id, target, port, timeout, protocol)
+
+    return {"status": "accepted", "job_id": job_id}
+
+@app.post("/worker/job/ssl")
+async def worker_process_ssl_job(request: Dict, background_tasks: BackgroundTasks):
+    """
+    Worker endpoint: Process SSL test job with Redis state updates
+    """
+    job_id = request.get("job_id")
+    hostname = request.get("hostname")
+    port = request.get("port", 443)
+
+    if not job_id or not hostname:
+        raise HTTPException(status_code=400, detail="job_id and hostname required")
+
+    job_manager = get_job_manager()
+    job_manager.update_job(job_id, status="running", progress=0)
+
+    background_tasks.add_task(process_worker_ssl_test, job_id, hostname, port)
 
     return {"status": "accepted", "job_id": job_id}
 
@@ -1061,6 +1169,164 @@ async def process_worker_vless_test(job_id: str, vless_url: str, timeout: int, t
 
     except Exception as e:
         logger.error(f"Error in worker job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_connectivity_job(job_id: str, request: ConnectivityTestRequest, workers: List[str]):
+    """Background task to process connectivity test across all workers"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=10)
+
+        results = []
+        total_workers = len(workers)
+
+        # Create all worker sub-jobs in Redis
+        for idx, worker_url in enumerate(workers):
+            worker_job_id = f"{job_id}_{idx}"
+            job_manager.create_job(
+                job_type="connectivity_test_worker",
+                params={
+                    "target": request.target,
+                    "port": request.port,
+                    "timeout": request.timeout,
+                    "protocol": request.protocol,
+                    "worker_url": worker_url.strip()
+                },
+                job_id=worker_job_id
+            )
+
+        # Submit to all workers in parallel
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            async def submit_to_worker(idx: int, worker_url: str):
+                worker_url = worker_url.strip()
+                worker_job_id = f"{job_id}_{idx}"
+                try:
+                    payload = {
+                        "job_id": worker_job_id,
+                        "target": request.target,
+                        "port": request.port,
+                        "timeout": request.timeout,
+                        "protocol": request.protocol
+                    }
+                    logger.info(f"Submitting connectivity job {worker_job_id} to worker {worker_url}")
+
+                    response = await client.post(f"{worker_url}/worker/job/connectivity", json=payload)
+                    logger.info(f"Worker {worker_url} responded with status {response.status_code}")
+
+                    if response.status_code == 200:
+                        return {"worker_url": worker_url, "status": "submitted", "worker_job_id": worker_job_id}
+                    else:
+                        return {"worker_url": worker_url, "status": "failed", "error": f"HTTP {response.status_code}"}
+                except Exception as e:
+                    logger.error(f"Failed to submit job to worker {worker_url}: {e}")
+                    return {"worker_url": worker_url, "status": "failed", "error": str(e)}
+
+            tasks = [submit_to_worker(idx, worker_url) for idx, worker_url in enumerate(workers)]
+            results = await asyncio.gather(*tasks)
+            job_manager.update_job(job_id, progress=100)
+
+        job_manager.update_job(job_id, status="completed", result={"total_workers": total_workers, "submitted": sum(1 for r in results if r.get("status") == "submitted"), "results": results})
+
+    except Exception as e:
+        logger.error(f"Error processing connectivity job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_ssl_job(job_id: str, request: SSLTestRequest, workers: List[str]):
+    """Background task to process SSL test across all workers"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=10)
+
+        results = []
+        total_workers = len(workers)
+
+        # Create all worker sub-jobs in Redis
+        for idx, worker_url in enumerate(workers):
+            worker_job_id = f"{job_id}_{idx}"
+            job_manager.create_job(
+                job_type="ssl_test_worker",
+                params={
+                    "hostname": request.hostname,
+                    "port": request.port,
+                    "worker_url": worker_url.strip()
+                },
+                job_id=worker_job_id
+            )
+
+        # Submit to all workers in parallel
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            async def submit_to_worker(idx: int, worker_url: str):
+                worker_url = worker_url.strip()
+                worker_job_id = f"{job_id}_{idx}"
+                try:
+                    payload = {
+                        "job_id": worker_job_id,
+                        "hostname": request.hostname,
+                        "port": request.port
+                    }
+                    logger.info(f"Submitting SSL job {worker_job_id} to worker {worker_url}")
+
+                    response = await client.post(f"{worker_url}/worker/job/ssl", json=payload)
+                    logger.info(f"Worker {worker_url} responded with status {response.status_code}")
+
+                    if response.status_code == 200:
+                        return {"worker_url": worker_url, "status": "submitted", "worker_job_id": worker_job_id}
+                    else:
+                        return {"worker_url": worker_url, "status": "failed", "error": f"HTTP {response.status_code}"}
+                except Exception as e:
+                    logger.error(f"Failed to submit job to worker {worker_url}: {e}")
+                    return {"worker_url": worker_url, "status": "failed", "error": str(e)}
+
+            tasks = [submit_to_worker(idx, worker_url) for idx, worker_url in enumerate(workers)]
+            results = await asyncio.gather(*tasks)
+            job_manager.update_job(job_id, progress=100)
+
+        job_manager.update_job(job_id, status="completed", result={"total_workers": total_workers, "submitted": sum(1 for r in results if r.get("status") == "submitted"), "results": results})
+
+    except Exception as e:
+        logger.error(f"Error processing SSL job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_worker_connectivity_test(job_id: str, target: str, port: int, timeout: int, protocol: str):
+    """Background task for worker to process connectivity test and update Redis"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=25)
+
+        # Run the actual test
+        tester = ConnectivityTester()
+        result = tester.test(target, port, timeout, protocol)
+
+        job_manager.update_job(job_id, progress=75)
+
+        # Store result
+        job_manager.update_job(job_id, status="completed", progress=100, result=result)
+
+    except Exception as e:
+        logger.error(f"Error in worker connectivity job {job_id}: {e}")
+        job_manager.update_job(job_id, status="failed", error=str(e))
+
+async def process_worker_ssl_test(job_id: str, hostname: str, port: int):
+    """Background task for worker to process SSL test and update Redis"""
+    job_manager = get_job_manager()
+
+    try:
+        job_manager.update_job(job_id, status="running", progress=25)
+
+        # Run the actual test
+        checker = SSLChecker()
+        result = checker.check(hostname, port)
+
+        job_manager.update_job(job_id, progress=75)
+
+        # Store result
+        job_manager.update_job(job_id, status="completed", progress=100, result=result)
+
+    except Exception as e:
+        logger.error(f"Error in worker SSL job {job_id}: {e}")
         job_manager.update_job(job_id, status="failed", error=str(e))
 
 if __name__ == "__main__":
