@@ -184,7 +184,89 @@ Test VLESS connection synchronously (waits for all workers to complete).
 
 ---
 
-### 5. Test Basic Connectivity
+### 5. Test Subscription (Async)
+
+Test VLESS subscription URL and optionally test individual links across all workers.
+
+**Endpoint**: `POST /orchestrator/test/subscription/async`
+
+**Request Body**:
+```json
+{
+  "subscription_url": "https://example.com/sub/user123",
+  "timeout": 30,
+  "test_vless_links": true,
+  "max_links_to_test": 3
+}
+```
+
+**Parameters**:
+- `subscription_url` (required): Subscription URL to test
+- `timeout` (optional): Timeout in seconds (default: 30)
+- `test_vless_links` (optional): Whether to test VLESS links via xray (default: false)
+- `max_links_to_test` (optional): Maximum links to test (default: 3, 0 = all)
+
+**How It Works**:
+1. Orchestrator fetches and parses subscription **once**
+2. Extracts VLESS links from subscription
+3. Sends **same links** to all workers for testing
+4. Each worker tests links via xray and reports results
+
+**Response**:
+```json
+{
+  "job_id": "uuid-here",
+  "status": "pending",
+  "message": "Job submitted successfully"
+}
+```
+
+**Job Status Response** (via `/orchestrator/job/{job_id}`):
+```json
+{
+  "job_id": "uuid-here",
+  "job_type": "subscription_test",
+  "status": "completed",
+  "progress": 100,
+  "total_workers": 4,
+  "successful": 4,
+  "failed": 0,
+  "worker_results": [
+    {
+      "worker_url": "http://worker1:8001",
+      "worker_job_id": "uuid-here_0",
+      "status": "completed",
+      "test_result": {
+        "success": true,
+        "accessible": true,
+        "link_count": 14,
+        "tested_links": [
+          {
+            "success": true,
+            "remark": "Server A",
+            "latency_ms": 245.5,
+            "error": null
+          },
+          {
+            "success": false,
+            "remark": "Server B",
+            "latency_ms": null,
+            "error": "Connection timeout"
+          }
+        ],
+        "error": null
+      },
+      "error": null
+    }
+  ]
+}
+```
+
+**Key Feature**: All workers test the **same VLESS links**, enabling geographic comparison of link performance across different network providers.
+
+---
+
+### 6. Test Basic Connectivity
 
 Test basic TCP/HTTP connectivity from all workers (no proxy).
 
