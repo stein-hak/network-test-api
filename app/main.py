@@ -998,7 +998,7 @@ async def get_job_status(job_id: str):
 
         # Count successful tests
         successful = sum(1 for r in worker_results
-                        if r.get('test_result', {}).get('success') == True)
+                        if r.get('test_result') and r.get('test_result', {}).get('success') == True)
 
         # Return enhanced job data with aggregated results
         return {
