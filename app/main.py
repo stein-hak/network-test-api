@@ -5,6 +5,7 @@ Network Test API - REST API for testing connectivity, SSL, and VLESS links
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, validator
 from typing import Optional, Dict, List
 import logging
@@ -84,6 +85,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialize scheduler on startup
 @app.on_event("startup")
@@ -212,12 +216,20 @@ class ScheduledSSLRequest(BaseModel):
 # Endpoints
 @app.get("/")
 async def root():
-    """API root - health check"""
+    """API root - redirect to web UI"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/static/index.html")
+
+@app.get("/api")
+async def api_info():
+    """API information"""
     return {
         "service": "Network Test API",
         "version": "2.0.0",
         "status": "running",
-        "features": ["sync_tests", "async_tasks", "scheduled_tests"],
+        "features": ["sync_tests", "async_tasks", "scheduled_tests", "web_ui"],
+        "web_ui": "/static/index.html",
+        "api_docs": "/docs",
         "endpoints": {
             "sync": {
                 "connectivity": "/test/connectivity",

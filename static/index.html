@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Test API - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f7fa;
+            color: #2c3e50;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 15px;
+            color: #7f8c8d;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            color: #2c3e50;
+        }
+
+        .tab.active {
+            color: #3498db;
+            border-bottom-color: #3498db;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #2c3e50;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #34495e;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #dce0e5;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+
+        textarea {
+            min-height: 100px;
+            font-family: monospace;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: #7f8c8d;
+        }
+
+        button.secondary:hover {
+            background: #6c7a7b;
+        }
+
+        button.danger {
+            background: #e74c3c;
+        }
+
+        button.danger:hover {
+            background: #c0392b;
+        }
+
+        .results {
+            margin-top: 20px;
+            padding: 16px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+        }
+
+        .results pre {
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .loading {
+            display: inline-block;
+            margin-left: 10px;
+            color: #3498db;
+        }
+
+        .worker-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .worker-card {
+            padding: 16px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
+        }
+
+        .worker-card.success {
+            border-left-color: #27ae60;
+        }
+
+        .worker-card.failed {
+            border-left-color: #e74c3c;
+        }
+
+        .worker-url {
+            font-size: 12px;
+            color: #7f8c8d;
+            margin-bottom: 8px;
+        }
+
+        .worker-status {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .status-pending { color: #f39c12; }
+        .status-running { color: #3498db; }
+        .status-completed { color: #27ae60; }
+        .status-failed { color: #e74c3c; }
+
+        .scheduled-list {
+            margin-top: 16px;
+        }
+
+        .scheduled-item {
+            padding: 16px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .scheduled-info h4 {
+            margin-bottom: 4px;
+            color: #2c3e50;
+        }
+
+        .scheduled-meta {
+            font-size: 13px;
+            color: #7f8c8d;
+        }
+
+        .scheduled-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .scheduled-actions button {
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .badge.enabled {
+            background: #d5f4e6;
+            color: #27ae60;
+        }
+
+        .badge.disabled {
+            background: #fadbd8;
+            color: #e74c3c;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 768px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+
+        .alert-info {
+            background: #d6eaf8;
+            color: #21618c;
+        }
+
+        .alert-success {
+            background: #d5f4e6;
+            color: #186a3b;
+        }
+
+        .alert-error {
+            background: #fadbd8;
+            color: #943126;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Network Test API Dashboard</h1>
+            <div class="subtitle">Distributed VLESS proxy testing across multiple workers</div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('manual')">Manual Tests</button>
+            <button class="tab" onclick="switchTab('scheduled')">Scheduled Tests</button>
+            <button class="tab" onclick="switchTab('workers')">Worker Status</button>
+        </div>
+
+        <!-- Manual Tests Tab -->
+        <div id="manual-tab" class="tab-content active">
+            <div class="grid-2">
+                <div class="card">
+                    <h3 class="card-title">Test VLESS Connection</h3>
+                    <form onsubmit="testVLESS(event)">
+                        <div class="form-group">
+                            <label>VLESS URL</label>
+                            <textarea id="vless-url" placeholder="vless://..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>Timeout (seconds)</label>
+                            <input type="number" id="vless-timeout" value="20" min="5" max="60">
+                        </div>
+                        <button type="submit">Test VLESS</button>
+                    </form>
+                    <div id="vless-results"></div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Test Subscription</h3>
+                    <form onsubmit="testSubscription(event)">
+                        <div class="form-group">
+                            <label>Subscription URL</label>
+                            <input type="text" id="sub-url" placeholder="https://example.com/sub/user123">
+                        </div>
+                        <div class="form-group">
+                            <label>Timeout (seconds)</label>
+                            <input type="number" id="sub-timeout" value="30" min="5" max="60">
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <input type="checkbox" id="test-links" checked>
+                            <label for="test-links">Test VLESS links via xray</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Max links to test (0 = all)</label>
+                            <input type="number" id="max-links" value="3" min="0" max="20">
+                        </div>
+                        <button type="submit">Test Subscription</button>
+                    </form>
+                    <div id="sub-results"></div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <h3 class="card-title">Test Connectivity</h3>
+                    <form onsubmit="testConnectivity(event)">
+                        <div class="form-group">
+                            <label>Target (domain or IP)</label>
+                            <input type="text" id="conn-target" placeholder="example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Port</label>
+                            <input type="number" id="conn-port" value="443" min="1" max="65535">
+                        </div>
+                        <div class="form-group">
+                            <label>Protocol</label>
+                            <select id="conn-protocol">
+                                <option value="https">HTTPS</option>
+                                <option value="http">HTTP</option>
+                                <option value="tcp">TCP</option>
+                            </select>
+                        </div>
+                        <button type="submit">Test Connectivity</button>
+                    </form>
+                    <div id="conn-results"></div>
+                </div>
+
+                <div class="card">
+                    <h3 class="card-title">Test SSL Certificate</h3>
+                    <form onsubmit="testSSL(event)">
+                        <div class="form-group">
+                            <label>Domain</label>
+                            <input type="text" id="ssl-domain" placeholder="example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Port</label>
+                            <input type="number" id="ssl-port" value="443" min="1" max="65535">
+                        </div>
+                        <button type="submit">Test SSL</button>
+                    </form>
+                    <div id="ssl-results"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scheduled Tests Tab -->
+        <div id="scheduled-tab" class="tab-content">
+            <div class="card">
+                <h3 class="card-title">Create Scheduled Test</h3>
+                <form onsubmit="createScheduledTest(event)">
+                    <div class="form-group">
+                        <label>Test Type</label>
+                        <select id="sched-type" onchange="updateScheduledForm()">
+                            <option value="subscription">Subscription</option>
+                            <option value="vless">VLESS</option>
+                            <option value="connectivity">Connectivity</option>
+                            <option value="ssl">SSL</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Test Name</label>
+                        <input type="text" id="sched-name" placeholder="Daily subscription check" required>
+                    </div>
+
+                    <div id="sched-params"></div>
+
+                    <div class="form-group">
+                        <label>Schedule Type</label>
+                        <select id="sched-schedule-type" onchange="updateScheduleFields()">
+                            <option value="interval">Interval (hours)</option>
+                            <option value="cron">Cron Expression</option>
+                        </select>
+                    </div>
+                    <div id="sched-interval-field" class="form-group">
+                        <label>Interval (hours)</label>
+                        <input type="number" id="sched-interval" value="24" min="1">
+                    </div>
+                    <div id="sched-cron-field" class="form-group" style="display:none;">
+                        <label>Cron Expression</label>
+                        <input type="text" id="sched-cron" placeholder="0 */6 * * *">
+                        <small style="color: #7f8c8d;">Examples: "0 */6 * * *" (every 6h), "*/15 * * * *" (every 15min)</small>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="sched-enabled" checked>
+                        <label for="sched-enabled">Enabled</label>
+                    </div>
+                    <button type="submit">Create Scheduled Test</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3 class="card-title">Scheduled Tests</h3>
+                <button onclick="loadScheduledTests()" class="secondary">Refresh List</button>
+                <div id="scheduled-list" class="scheduled-list"></div>
+            </div>
+        </div>
+
+        <!-- Worker Status Tab -->
+        <div id="workers-tab" class="tab-content">
+            <div class="card">
+                <h3 class="card-title">Worker Outbound IPs</h3>
+                <button onclick="checkWorkerIPs()">Check All Workers</button>
+                <div id="worker-ips" class="worker-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
