@@ -171,6 +171,44 @@ class SubscriptionTestResponse(BaseModel):
     error: Optional[str]
     timestamp: str
 
+# Scheduled test request models
+class ScheduledVLESSRequest(BaseModel):
+    name: str
+    vless_url: str
+    interval_hours: Optional[int] = None
+    cron_expression: Optional[str] = None
+    timeout: int = 20
+    enabled: bool = True
+
+class ScheduledSubscriptionRequest(BaseModel):
+    name: str
+    subscription_url: str
+    interval_hours: Optional[int] = None
+    cron_expression: Optional[str] = None
+    test_vless_links: bool = True
+    max_links_to_test: int = 3
+    timeout: int = 30
+    enabled: bool = True
+
+class ScheduledConnectivityRequest(BaseModel):
+    name: str
+    target: str
+    port: int = 443
+    protocol: str = "https"
+    interval_hours: Optional[int] = None
+    cron_expression: Optional[str] = None
+    timeout: int = 10
+    enabled: bool = True
+
+class ScheduledSSLRequest(BaseModel):
+    name: str
+    domain: str
+    port: int = 443
+    interval_hours: Optional[int] = None
+    cron_expression: Optional[str] = None
+    timeout: int = 10
+    enabled: bool = True
+
 # Endpoints
 @app.get("/")
 async def root():
@@ -586,14 +624,7 @@ async def scheduler_status():
 # ======================
 
 @app.post("/orchestrator/scheduled/vless")
-async def create_scheduled_vless_test(
-    name: str,
-    vless_url: str,
-    interval_hours: Optional[int] = None,
-    cron_expression: Optional[str] = None,
-    timeout: int = 20,
-    enabled: bool = True
-):
+async def create_scheduled_vless_test(request: ScheduledVLESSRequest):
     """
     Create a scheduled VLESS test via orchestrator
 
@@ -606,47 +637,38 @@ async def create_scheduled_vless_test(
     if not workers_env:
         raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
 
-    if not interval_hours and not cron_expression:
+    if not request.interval_hours and not request.cron_expression:
         raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
 
-    if interval_hours and cron_expression:
+    if request.interval_hours and request.cron_expression:
         raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
 
-    schedule_type = "interval" if interval_hours else "cron"
+    schedule_type = "interval" if request.interval_hours else "cron"
 
     scheduled_id = create_scheduled_test(
-        name=name,
+        name=request.name,
         task_type="vless",
         request_data={
-            "vless_url": vless_url,
-            "timeout": timeout
+            "vless_url": request.vless_url,
+            "timeout": request.timeout
         },
         schedule_type=schedule_type,
-        interval_hours=interval_hours,
-        cron_expression=cron_expression,
-        enabled=enabled
+        interval_hours=request.interval_hours,
+        cron_expression=request.cron_expression,
+        enabled=request.enabled
     )
 
     return {
         "scheduled_id": scheduled_id,
-        "name": name,
+        "name": request.name,
         "task_type": "vless",
-        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
-        "enabled": enabled,
+        "schedule": f"every {request.interval_hours} hours" if request.interval_hours else request.cron_expression,
+        "enabled": request.enabled,
         "message": "Scheduled VLESS test created successfully"
     }
 
 @app.post("/orchestrator/scheduled/subscription")
-async def create_scheduled_subscription_test_orchestrator(
-    name: str,
-    subscription_url: str,
-    interval_hours: Optional[int] = None,
-    cron_expression: Optional[str] = None,
-    test_vless_links: bool = True,
-    max_links_to_test: int = 3,
-    timeout: int = 30,
-    enabled: bool = True
-):
+async def create_scheduled_subscription_test_orchestrator(request: ScheduledSubscriptionRequest):
     """
     Create a scheduled subscription test via orchestrator
 
@@ -659,49 +681,40 @@ async def create_scheduled_subscription_test_orchestrator(
     if not workers_env:
         raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
 
-    if not interval_hours and not cron_expression:
+    if not request.interval_hours and not request.cron_expression:
         raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
 
-    if interval_hours and cron_expression:
+    if request.interval_hours and request.cron_expression:
         raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
 
-    schedule_type = "interval" if interval_hours else "cron"
+    schedule_type = "interval" if request.interval_hours else "cron"
 
     scheduled_id = create_scheduled_test(
-        name=name,
+        name=request.name,
         task_type="subscription",
         request_data={
-            "subscription_url": subscription_url,
-            "timeout": timeout,
-            "test_vless_links": test_vless_links,
-            "max_links_to_test": max_links_to_test
+            "subscription_url": request.subscription_url,
+            "timeout": request.timeout,
+            "test_vless_links": request.test_vless_links,
+            "max_links_to_test": request.max_links_to_test
         },
         schedule_type=schedule_type,
-        interval_hours=interval_hours,
-        cron_expression=cron_expression,
-        enabled=enabled
+        interval_hours=request.interval_hours,
+        cron_expression=request.cron_expression,
+        enabled=request.enabled
     )
 
     return {
         "scheduled_id": scheduled_id,
-        "name": name,
+        "name": request.name,
         "task_type": "subscription",
-        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
-        "enabled": enabled,
+        "schedule": f"every {request.interval_hours} hours" if request.interval_hours else request.cron_expression,
+        "enabled": request.enabled,
         "message": "Scheduled subscription test created successfully"
     }
 
 @app.post("/orchestrator/scheduled/connectivity")
-async def create_scheduled_connectivity_test(
-    name: str,
-    target: str,
-    port: int = 443,
-    protocol: str = "https",
-    interval_hours: Optional[int] = None,
-    cron_expression: Optional[str] = None,
-    timeout: int = 10,
-    enabled: bool = True
-):
+async def create_scheduled_connectivity_test(request: ScheduledConnectivityRequest):
     """
     Create a scheduled connectivity test via orchestrator
 
@@ -711,48 +724,40 @@ async def create_scheduled_connectivity_test(
     if not workers_env:
         raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
 
-    if not interval_hours and not cron_expression:
+    if not request.interval_hours and not request.cron_expression:
         raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
 
-    if interval_hours and cron_expression:
+    if request.interval_hours and request.cron_expression:
         raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
 
-    schedule_type = "interval" if interval_hours else "cron"
+    schedule_type = "interval" if request.interval_hours else "cron"
 
     scheduled_id = create_scheduled_test(
-        name=name,
+        name=request.name,
         task_type="connectivity",
         request_data={
-            "target": target,
-            "port": port,
-            "protocol": protocol,
-            "timeout": timeout
+            "target": request.target,
+            "port": request.port,
+            "protocol": request.protocol,
+            "timeout": request.timeout
         },
         schedule_type=schedule_type,
-        interval_hours=interval_hours,
-        cron_expression=cron_expression,
-        enabled=enabled
+        interval_hours=request.interval_hours,
+        cron_expression=request.cron_expression,
+        enabled=request.enabled
     )
 
     return {
         "scheduled_id": scheduled_id,
-        "name": name,
+        "name": request.name,
         "task_type": "connectivity",
-        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
-        "enabled": enabled,
+        "schedule": f"every {request.interval_hours} hours" if request.interval_hours else request.cron_expression,
+        "enabled": request.enabled,
         "message": "Scheduled connectivity test created successfully"
     }
 
 @app.post("/orchestrator/scheduled/ssl")
-async def create_scheduled_ssl_test(
-    name: str,
-    domain: str,
-    port: int = 443,
-    interval_hours: Optional[int] = None,
-    cron_expression: Optional[str] = None,
-    timeout: int = 10,
-    enabled: bool = True
-):
+async def create_scheduled_ssl_test(request: ScheduledSSLRequest):
     """
     Create a scheduled SSL certificate test via orchestrator
 
@@ -762,34 +767,34 @@ async def create_scheduled_ssl_test(
     if not workers_env:
         raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
 
-    if not interval_hours and not cron_expression:
+    if not request.interval_hours and not request.cron_expression:
         raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
 
-    if interval_hours and cron_expression:
+    if request.interval_hours and request.cron_expression:
         raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
 
-    schedule_type = "interval" if interval_hours else "cron"
+    schedule_type = "interval" if request.interval_hours else "cron"
 
     scheduled_id = create_scheduled_test(
-        name=name,
+        name=request.name,
         task_type="ssl",
         request_data={
-            "domain": domain,
-            "port": port,
-            "timeout": timeout
+            "domain": request.domain,
+            "port": request.port,
+            "timeout": request.timeout
         },
         schedule_type=schedule_type,
-        interval_hours=interval_hours,
-        cron_expression=cron_expression,
-        enabled=enabled
+        interval_hours=request.interval_hours,
+        cron_expression=request.cron_expression,
+        enabled=request.enabled
     )
 
     return {
         "scheduled_id": scheduled_id,
-        "name": name,
+        "name": request.name,
         "task_type": "ssl",
-        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
-        "enabled": enabled,
+        "schedule": f"every {request.interval_hours} hours" if request.interval_hours else request.cron_expression,
+        "enabled": request.enabled,
         "message": "Scheduled SSL test created successfully"
     }
 
