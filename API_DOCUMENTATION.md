@@ -529,6 +529,206 @@ systemctl status network-test-worker-cable
 
 ---
 
+## Scheduled Tests (Orchestrator)
+
+### Overview
+
+The orchestrator supports automated recurring tests via APScheduler integration. Scheduled tests:
+- Run automatically on interval (hours) or cron schedule
+- Execute via orchestrator async endpoints across all workers
+- Store job results in Redis (1-hour TTL) and metadata in SQLite
+- Can be enabled/disabled dynamically without deletion
+
+### Architecture
+
+**Dual Storage**:
+- **SQLite**: Persistent schedule configuration, run history, last job_id
+- **Redis**: Ephemeral job results (1-hour TTL, auto-cleanup)
+
+**Workflow**:
+1. Scheduler triggers at configured time
+2. Creates job via `/orchestrator/test/{type}/async`
+3. Stores job_id in SQLite `last_task_id` field
+4. Job executes across all workers in background
+5. Results available via Redis for 1 hour
+
+### Create Scheduled Test
+
+**Endpoints**:
+- `POST /orchestrator/scheduled/vless`
+- `POST /orchestrator/scheduled/subscription`
+- `POST /orchestrator/scheduled/connectivity`
+- `POST /orchestrator/scheduled/ssl`
+
+**Request Body (Subscription Example)**:
+```json
+{
+  "name": "Daily Subscription Check",
+  "subscription_url": "https://example.com/sub/user123",
+  "interval_hours": 24,
+  "test_vless_links": true,
+  "max_links_to_test": 3,
+  "timeout": 30,
+  "enabled": true
+}
+```
+
+**Scheduling Options**:
+- `interval_hours`: Run every N hours (e.g., 6 = every 6 hours)
+- `cron_expression`: Cron format (e.g., "0 */6 * * *" = every 6 hours, "*/2 * * * *" = every 2 minutes)
+- **Must provide either `interval_hours` OR `cron_expression`, not both**
+
+**Response**:
+```json
+{
+  "scheduled_id": "uuid-here",
+  "name": "Daily Subscription Check",
+  "task_type": "subscription",
+  "schedule": "every 24 hours",
+  "enabled": true,
+  "message": "Scheduled subscription test created successfully"
+}
+```
+
+### List Scheduled Tests
+
+**Endpoint**: `GET /orchestrator/scheduled`
+
+**Response**:
+```json
+{
+  "count": 2,
+  "scheduled_tests": [
+    {
+      "id": "uuid-1",
+      "name": "Daily Subscription Check",
+      "task_type": "subscription",
+      "enabled": true,
+      "schedule": "every 24h",
+      "last_run": "2026-05-30T05:56:00.298314",
+      "last_job_id": "job-uuid-123",
+      "run_count": 42,
+      "created_at": "2026-05-20T10:00:00"
+    }
+  ]
+}
+```
+
+### Get Scheduled Test Details with Results
+
+**Endpoint**: `GET /orchestrator/scheduled/{scheduled_id}`
+
+Returns schedule configuration + latest job results from Redis (if available).
+
+**Response**:
+```json
+{
+  "id": "uuid-1",
+  "name": "Daily Subscription Check",
+  "task_type": "subscription",
+  "enabled": true,
+  "schedule": "every 24h",
+  "request_data": {
+    "subscription_url": "https://example.com/sub/user123",
+    "timeout": 30,
+    "test_vless_links": true,
+    "max_links_to_test": 3
+  },
+  "last_run_at": "2026-05-30T05:56:00.298314",
+  "last_job_id": "job-uuid-123",
+  "run_count": 42,
+  "created_at": "2026-05-20T10:00:00",
+  "last_job_result": {
+    "job_id": "job-uuid-123",
+    "job_type": "subscription_test",
+    "status": "completed",
+    "progress": 100,
+    "total_workers": 4,
+    "successful": 4,
+    "failed": 0,
+    "worker_results": [
+      {
+        "worker_url": "http://worker1:8001",
+        "status": "completed",
+        "test_result": {
+          "success": true,
+          "link_count": 3,
+          "tested_links": [...]
+        }
+      }
+    ],
+    "created_at": "2026-05-30T05:56:00.024640",
+    "updated_at": "2026-05-30T05:56:15.123456"
+  }
+}
+```
+
+**Note**: `last_job_result` will be `null` if:
+- Job hasn't run yet
+- Job expired from Redis (>1 hour old)
+- Job is still running
+
+### Enable/Disable Scheduled Test
+
+**Endpoint**: `PUT /orchestrator/scheduled/{scheduled_id}/enable?enabled=true`
+
+**Query Parameters**:
+- `enabled`: `true` to enable, `false` to disable
+
+**Response**:
+```json
+{
+  "message": "Scheduled test 'Daily Subscription Check' enabled",
+  "scheduled_id": "uuid-1",
+  "enabled": true
+}
+```
+
+### Delete Scheduled Test
+
+**Endpoint**: `DELETE /orchestrator/scheduled/{scheduled_id}`
+
+Removes from both APScheduler and SQLite database.
+
+**Response**:
+```json
+{
+  "message": "Scheduled test 'Daily Subscription Check' deleted successfully",
+  "scheduled_id": "uuid-1"
+}
+```
+
+### Cron Expression Format
+
+Standard cron format with 5 fields:
+```
+┌───────────── minute (0 - 59)
+│ ┌───────────── hour (0 - 23)
+│ │ ┌───────────── day of month (1 - 31)
+│ │ │ ┌───────────── month (1 - 12)
+│ │ │ │ ┌───────────── day of week (0 - 6) (Sunday = 0)
+│ │ │ │ │
+│ │ │ │ │
+* * * * *
+```
+
+**Examples**:
+- `0 */6 * * *` - Every 6 hours at minute 0
+- `*/2 * * * *` - Every 2 minutes
+- `0 0 * * *` - Daily at midnight
+- `0 9 * * 1` - Every Monday at 9:00 AM
+- `*/15 * * * *` - Every 15 minutes
+
+### Best Practices
+
+1. **Job TTL**: Results expire after 1 hour in Redis. For long intervals, fetch results soon after execution
+2. **Scheduling**: Use cron for specific times, interval for simple recurring tasks
+3. **Monitoring**: Check `run_count` and `last_run_at` to verify scheduler is working
+4. **Error Handling**: Check `last_job_result.status` - may be `failed` even if scheduled test succeeded
+5. **Resource Usage**: Avoid too-frequent schedules (< 5 minutes) to prevent worker overload
+
+---
+
 ## Support
 
 - GitHub Issues: https://github.com/stein-hak/network-test-api/issues
