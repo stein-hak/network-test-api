@@ -1089,20 +1089,22 @@ async def worker_process_ssl_job(request: Dict, background_tasks: BackgroundTask
 async def worker_process_subscription_job(request: Dict, background_tasks: BackgroundTasks):
     """
     Worker endpoint: Process subscription test job with Redis state updates
+    Accepts pre-parsed VLESS links from orchestrator
     """
     job_id = request.get("job_id")
-    subscription_url = request.get("subscription_url")
-    timeout = request.get("timeout", 10)
-    test_vless_links = request.get("test_vless_links", False)
-    max_links_to_test = request.get("max_links_to_test", 3)
+    vless_links = request.get("vless_links")  # List of VLESS URLs
+    timeout = request.get("timeout", 15)
 
-    if not job_id or not subscription_url:
-        raise HTTPException(status_code=400, detail="job_id and subscription_url required")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id required")
+
+    if not vless_links or not isinstance(vless_links, list):
+        raise HTTPException(status_code=400, detail="vless_links must be a list of VLESS URLs")
 
     job_manager = get_job_manager()
     job_manager.update_job(job_id, status="running", progress=0)
 
-    background_tasks.add_task(process_worker_subscription_test, job_id, subscription_url, timeout, test_vless_links, max_links_to_test)
+    background_tasks.add_task(process_worker_subscription_test, job_id, vless_links, timeout)
 
     return {"status": "accepted", "job_id": job_id}
 
@@ -1392,6 +1394,27 @@ async def process_subscription_job(job_id: str, request: SubscriptionTestRequest
     try:
         job_manager.update_job(job_id, status="running", progress=10)
 
+        # Orchestrator fetches and parses subscription ONCE
+        logger.info(f"Orchestrator fetching subscription from {request.subscription_url}")
+        vless_links = None
+
+        if request.test_vless_links:
+            from app.testers.subscription import SubscriptionTester
+            tester = SubscriptionTester()
+
+            # Only fetch subscription, don't test links yet
+            vless_links = tester.parse_subscription(request.subscription_url, timeout=request.timeout)
+
+            if vless_links is None:
+                raise Exception("Failed to fetch/parse subscription")
+
+            logger.info(f"Orchestrator parsed {len(vless_links)} VLESS links from subscription")
+
+            # Select which links to test
+            if request.max_links_to_test > 0:
+                vless_links = vless_links[:request.max_links_to_test]
+                logger.info(f"Will test first {len(vless_links)} links on each worker")
+
         results = []
         total_workers = len(workers)
 
@@ -1401,10 +1424,8 @@ async def process_subscription_job(job_id: str, request: SubscriptionTestRequest
             job_manager.create_job(
                 job_type="subscription_test_worker",
                 params={
-                    "subscription_url": request.subscription_url,
+                    "vless_links": vless_links,  # Send parsed links instead of URL
                     "timeout": request.timeout,
-                    "test_vless_links": request.test_vless_links,
-                    "max_links_to_test": request.max_links_to_test,
                     "worker_url": worker_url.strip()
                 },
                 job_id=worker_job_id
@@ -1418,10 +1439,8 @@ async def process_subscription_job(job_id: str, request: SubscriptionTestRequest
                 try:
                     payload = {
                         "job_id": worker_job_id,
-                        "subscription_url": request.subscription_url,
-                        "timeout": request.timeout,
-                        "test_vless_links": request.test_vless_links,
-                        "max_links_to_test": request.max_links_to_test
+                        "vless_links": vless_links,  # Send same links to all workers
+                        "timeout": request.timeout
                     }
                     logger.info(f"Submitting subscription job {worker_job_id} to worker {worker_url}")
 
@@ -1446,25 +1465,36 @@ async def process_subscription_job(job_id: str, request: SubscriptionTestRequest
         logger.error(f"Error processing subscription job {job_id}: {e}")
         job_manager.update_job(job_id, status="failed", error=str(e))
 
-async def process_worker_subscription_test(job_id: str, subscription_url: str, timeout: int, test_vless_links: bool, max_links_to_test: int):
-    """Background task for worker to process subscription test and update Redis"""
+async def process_worker_subscription_test(job_id: str, vless_links: List[str], timeout: int):
+    """Background task for worker to test VLESS links and update Redis"""
     job_manager = get_job_manager()
 
     try:
         job_manager.update_job(job_id, status="running", progress=25)
 
-        # Run the actual test using existing subscription test logic
-        tester = SubscriptionTester()
-        result = tester.test(
-            subscription_url=subscription_url,
-            timeout=timeout,
-            test_links=test_vless_links,
-            max_links=max_links_to_test
-        )
+        # Test VLESS links using VLESSTester
+        from app.testers.vless_tester import VLESSTester
+        vless_tester = VLESSTester()
+
+        tested_links = []
+        total_links = len(vless_links)
+
+        logger.info(f"Worker testing {total_links} VLESS links...")
+        for i, link in enumerate(vless_links, 1):
+            logger.info(f"Testing link {i}/{total_links}...")
+            test_result = vless_tester.test(link, timeout=timeout)
+            tested_links.append(test_result)
+
+        # Build result
+        result = {
+            "success": True,
+            "accessible": True,
+            "link_count": total_links,
+            "tested_links": tested_links,
+            "error": None
+        }
 
         job_manager.update_job(job_id, progress=75)
-
-        # Store result
         job_manager.update_job(job_id, status="completed", progress=100, result=result)
 
     except Exception as e:
