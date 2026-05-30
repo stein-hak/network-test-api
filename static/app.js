@@ -145,6 +145,14 @@ async function pollJobResults(jobId, resultsDiv) {
     const interval = setInterval(async () => {
         try {
             const response = await fetch(`${API_BASE}/orchestrator/job/${jobId}`);
+
+            if (!response.ok) {
+                clearInterval(interval);
+                const text = await response.text();
+                resultsDiv.innerHTML = `<div class="alert alert-error">API error (${response.status}): ${text}</div>`;
+                return;
+            }
+
             const job = await response.json();
 
             if (job.status === 'completed' || job.status === 'failed') {
