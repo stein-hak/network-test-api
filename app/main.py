@@ -13,6 +13,7 @@ import threading
 import os
 import asyncio
 import httpx
+import json
 import requests as requests_lib
 from requests.adapters import HTTPAdapter
 from urllib3.util.connection import create_connection
@@ -579,6 +580,350 @@ async def list_scheduled_tests(db: Session = Depends(get_db)):
 async def scheduler_status():
     """Get scheduler status and active jobs"""
     return get_scheduler_status()
+
+# ======================
+# Orchestrator Scheduled Test Endpoints
+# ======================
+
+@app.post("/orchestrator/scheduled/vless")
+async def create_scheduled_vless_test(
+    name: str,
+    vless_url: str,
+    interval_hours: Optional[int] = None,
+    cron_expression: Optional[str] = None,
+    timeout: int = 20,
+    enabled: bool = True
+):
+    """
+    Create a scheduled VLESS test via orchestrator
+
+    Runs automatically across all workers on schedule (interval or cron)
+    - interval_hours: Test every N hours (e.g., 6 for every 6 hours)
+    - cron_expression: Cron format (e.g., "0 */6 * * *" for every 6 hours)
+    - Use either interval_hours OR cron_expression, not both
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    if not interval_hours and not cron_expression:
+        raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
+
+    if interval_hours and cron_expression:
+        raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
+
+    schedule_type = "interval" if interval_hours else "cron"
+
+    scheduled_id = create_scheduled_test(
+        name=name,
+        task_type="vless",
+        request_data={
+            "vless_url": vless_url,
+            "timeout": timeout
+        },
+        schedule_type=schedule_type,
+        interval_hours=interval_hours,
+        cron_expression=cron_expression,
+        enabled=enabled
+    )
+
+    return {
+        "scheduled_id": scheduled_id,
+        "name": name,
+        "task_type": "vless",
+        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
+        "enabled": enabled,
+        "message": "Scheduled VLESS test created successfully"
+    }
+
+@app.post("/orchestrator/scheduled/subscription")
+async def create_scheduled_subscription_test_orchestrator(
+    name: str,
+    subscription_url: str,
+    interval_hours: Optional[int] = None,
+    cron_expression: Optional[str] = None,
+    test_vless_links: bool = True,
+    max_links_to_test: int = 3,
+    timeout: int = 30,
+    enabled: bool = True
+):
+    """
+    Create a scheduled subscription test via orchestrator
+
+    Runs automatically across all workers on schedule (interval or cron)
+    - interval_hours: Test every N hours (e.g., 6 for every 6 hours)
+    - cron_expression: Cron format (e.g., "0 */6 * * *" for every 6 hours)
+    - Use either interval_hours OR cron_expression, not both
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    if not interval_hours and not cron_expression:
+        raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
+
+    if interval_hours and cron_expression:
+        raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
+
+    schedule_type = "interval" if interval_hours else "cron"
+
+    scheduled_id = create_scheduled_test(
+        name=name,
+        task_type="subscription",
+        request_data={
+            "subscription_url": subscription_url,
+            "timeout": timeout,
+            "test_vless_links": test_vless_links,
+            "max_links_to_test": max_links_to_test
+        },
+        schedule_type=schedule_type,
+        interval_hours=interval_hours,
+        cron_expression=cron_expression,
+        enabled=enabled
+    )
+
+    return {
+        "scheduled_id": scheduled_id,
+        "name": name,
+        "task_type": "subscription",
+        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
+        "enabled": enabled,
+        "message": "Scheduled subscription test created successfully"
+    }
+
+@app.post("/orchestrator/scheduled/connectivity")
+async def create_scheduled_connectivity_test(
+    name: str,
+    target: str,
+    port: int = 443,
+    protocol: str = "https",
+    interval_hours: Optional[int] = None,
+    cron_expression: Optional[str] = None,
+    timeout: int = 10,
+    enabled: bool = True
+):
+    """
+    Create a scheduled connectivity test via orchestrator
+
+    Runs automatically across all workers on schedule
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    if not interval_hours and not cron_expression:
+        raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
+
+    if interval_hours and cron_expression:
+        raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
+
+    schedule_type = "interval" if interval_hours else "cron"
+
+    scheduled_id = create_scheduled_test(
+        name=name,
+        task_type="connectivity",
+        request_data={
+            "target": target,
+            "port": port,
+            "protocol": protocol,
+            "timeout": timeout
+        },
+        schedule_type=schedule_type,
+        interval_hours=interval_hours,
+        cron_expression=cron_expression,
+        enabled=enabled
+    )
+
+    return {
+        "scheduled_id": scheduled_id,
+        "name": name,
+        "task_type": "connectivity",
+        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
+        "enabled": enabled,
+        "message": "Scheduled connectivity test created successfully"
+    }
+
+@app.post("/orchestrator/scheduled/ssl")
+async def create_scheduled_ssl_test(
+    name: str,
+    domain: str,
+    port: int = 443,
+    interval_hours: Optional[int] = None,
+    cron_expression: Optional[str] = None,
+    timeout: int = 10,
+    enabled: bool = True
+):
+    """
+    Create a scheduled SSL certificate test via orchestrator
+
+    Runs automatically across all workers on schedule
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    if not interval_hours and not cron_expression:
+        raise HTTPException(status_code=400, detail="Must provide either interval_hours or cron_expression")
+
+    if interval_hours and cron_expression:
+        raise HTTPException(status_code=400, detail="Provide only interval_hours OR cron_expression, not both")
+
+    schedule_type = "interval" if interval_hours else "cron"
+
+    scheduled_id = create_scheduled_test(
+        name=name,
+        task_type="ssl",
+        request_data={
+            "domain": domain,
+            "port": port,
+            "timeout": timeout
+        },
+        schedule_type=schedule_type,
+        interval_hours=interval_hours,
+        cron_expression=cron_expression,
+        enabled=enabled
+    )
+
+    return {
+        "scheduled_id": scheduled_id,
+        "name": name,
+        "task_type": "ssl",
+        "schedule": f"every {interval_hours} hours" if interval_hours else cron_expression,
+        "enabled": enabled,
+        "message": "Scheduled SSL test created successfully"
+    }
+
+@app.get("/orchestrator/scheduled")
+async def list_scheduled_tests_orchestrator(db: Session = Depends(get_db)):
+    """List all scheduled tests (orchestrator mode)"""
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    tests = db.query(ScheduledTest).order_by(ScheduledTest.created_at.desc()).all()
+
+    return {
+        "count": len(tests),
+        "scheduled_tests": [
+            {
+                "id": st.id,
+                "name": st.name,
+                "task_type": st.task_type,
+                "enabled": st.enabled,
+                "schedule": f"every {st.interval_hours}h" if st.interval_hours else st.cron_expression,
+                "last_run": st.last_run_at.isoformat() if st.last_run_at else None,
+                "last_job_id": st.last_task_id,
+                "run_count": st.run_count,
+                "created_at": st.created_at.isoformat()
+            }
+            for st in tests
+        ]
+    }
+
+@app.get("/orchestrator/scheduled/{scheduled_id}")
+async def get_scheduled_test_with_results(scheduled_id: str, db: Session = Depends(get_db)):
+    """
+    Get scheduled test details with latest job results from Redis
+
+    Returns scheduled test configuration + results from last job_id (if available)
+    """
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    st = db.query(ScheduledTest).filter(ScheduledTest.id == scheduled_id).first()
+
+    if not st:
+        raise HTTPException(status_code=404, detail="Scheduled test not found")
+
+    response = {
+        "id": st.id,
+        "name": st.name,
+        "task_type": st.task_type,
+        "enabled": st.enabled,
+        "schedule": f"every {st.interval_hours}h" if st.interval_hours else st.cron_expression,
+        "request_data": json.loads(st.request_data),
+        "last_run_at": st.last_run_at.isoformat() if st.last_run_at else None,
+        "last_job_id": st.last_task_id,
+        "run_count": st.run_count,
+        "created_at": st.created_at.isoformat(),
+        "last_job_result": None
+    }
+
+    # Fetch latest job result from Redis if available
+    if st.last_task_id:
+        try:
+            job_manager = get_job_manager()
+            job_data = job_manager.get_job(st.last_task_id)
+
+            if job_data:
+                response["last_job_result"] = job_data
+        except Exception as e:
+            logger.warning(f"Failed to fetch job result for {st.last_task_id}: {e}")
+
+    return response
+
+@app.delete("/orchestrator/scheduled/{scheduled_id}")
+async def delete_scheduled_test(scheduled_id: str, db: Session = Depends(get_db)):
+    """Delete a scheduled test"""
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    st = db.query(ScheduledTest).filter(ScheduledTest.id == scheduled_id).first()
+
+    if not st:
+        raise HTTPException(status_code=404, detail="Scheduled test not found")
+
+    # Remove from APScheduler
+    from app.scheduler import scheduler
+    if scheduler:
+        job_id = f"scheduled_test_{scheduled_id}"
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+
+    # Delete from database
+    db.delete(st)
+    db.commit()
+
+    return {
+        "message": f"Scheduled test '{st.name}' deleted successfully",
+        "scheduled_id": scheduled_id
+    }
+
+@app.put("/orchestrator/scheduled/{scheduled_id}/enable")
+async def toggle_scheduled_test(scheduled_id: str, enabled: bool, db: Session = Depends(get_db)):
+    """Enable or disable a scheduled test"""
+    workers_env = os.getenv("WORKERS", "")
+    if not workers_env:
+        raise HTTPException(status_code=500, detail="WORKERS environment variable not set. This endpoint only works in orchestrator mode.")
+
+    st = db.query(ScheduledTest).filter(ScheduledTest.id == scheduled_id).first()
+
+    if not st:
+        raise HTTPException(status_code=404, detail="Scheduled test not found")
+
+    st.enabled = enabled
+    db.commit()
+
+    # Update APScheduler
+    from app.scheduler import scheduler, add_scheduled_test_to_scheduler
+    if scheduler:
+        job_id = f"scheduled_test_{scheduled_id}"
+
+        if enabled:
+            # Add to scheduler
+            add_scheduled_test_to_scheduler(st)
+        else:
+            # Remove from scheduler
+            if scheduler.get_job(job_id):
+                scheduler.remove_job(job_id)
+
+    return {
+        "message": f"Scheduled test '{st.name}' {'enabled' if enabled else 'disabled'}",
+        "scheduled_id": scheduled_id,
+        "enabled": enabled
+    }
 
 @app.get("/orchestrator/check-all-ips")
 async def check_all_worker_ips():

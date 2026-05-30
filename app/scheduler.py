@@ -191,7 +191,9 @@ async def _create_orchestrator_job(task_type: str, request_data: dict) -> str:
     # Map task_type to orchestrator endpoint
     endpoint_map = {
         "vless": "/orchestrator/test/vless/async",
-        "subscription": "/orchestrator/test/subscription/async"
+        "subscription": "/orchestrator/test/subscription/async",
+        "connectivity": "/orchestrator/test/connectivity/async",
+        "ssl": "/orchestrator/test/ssl/async"
     }
 
     endpoint = endpoint_map.get(task_type)
