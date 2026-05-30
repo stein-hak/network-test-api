@@ -8,6 +8,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 import json
+import os
+import httpx
+import asyncio
 
 from app.database import SessionLocal, ScheduledTest
 from app.tasks import create_task, execute_task
@@ -105,6 +108,9 @@ def run_scheduled_test(scheduled_test_id: str):
     """
     Execute a scheduled test
 
+    In orchestrator mode (WORKERS env var set): Creates distributed Redis job via /orchestrator/test/vless/async
+    In worker mode: Executes locally via legacy task system
+
     Args:
         scheduled_test_id: ID of the ScheduledTest
     """
@@ -123,31 +129,89 @@ def run_scheduled_test(scheduled_test_id: str):
         # Parse request data
         request_data = json.loads(st.request_data)
 
-        # Create task
-        task_id = create_task(
-            task_type=st.task_type,
-            request_data=request_data,
-            db=db,
-            client_ip="scheduler",
-            user_agent=f"Scheduled:{st.name}"
-        )
+        # Check if running in orchestrator mode
+        workers_env = os.getenv("WORKERS", "")
 
-        # Update scheduled test metadata
-        st.last_run_at = datetime.utcnow()
-        st.last_task_id = task_id
-        st.run_count += 1
-        db.commit()
+        if workers_env:
+            # Orchestrator mode: Create distributed job via HTTP
+            logger.info(f"Orchestrator mode detected, creating distributed job for '{st.name}'")
 
-        # Execute task
-        execute_task(task_id)
+            # Run async HTTP request in sync context
+            job_id = asyncio.run(_create_orchestrator_job(st.task_type, request_data))
 
-        logger.info(f"Scheduled test '{st.name}' completed. Task ID: {task_id}")
+            # Update scheduled test metadata with job_id
+            st.last_run_at = datetime.utcnow()
+            st.last_task_id = job_id  # Store job_id instead of task_id
+            st.run_count += 1
+            db.commit()
+
+            logger.info(f"Scheduled test '{st.name}' submitted to orchestrator. Job ID: {job_id}")
+        else:
+            # Worker mode: Local execution (legacy)
+            logger.info(f"Worker mode detected, executing locally for '{st.name}'")
+
+            # Create task
+            task_id = create_task(
+                task_type=st.task_type,
+                request_data=request_data,
+                db=db,
+                client_ip="scheduler",
+                user_agent=f"Scheduled:{st.name}"
+            )
+
+            # Update scheduled test metadata
+            st.last_run_at = datetime.utcnow()
+            st.last_task_id = task_id
+            st.run_count += 1
+            db.commit()
+
+            # Execute task locally
+            execute_task(task_id)
+
+            logger.info(f"Scheduled test '{st.name}' completed. Task ID: {task_id}")
 
     except Exception as e:
         logger.error(f"Error running scheduled test {scheduled_test_id}: {e}", exc_info=True)
 
     finally:
         db.close()
+
+
+async def _create_orchestrator_job(task_type: str, request_data: dict) -> str:
+    """
+    Create a distributed job via orchestrator HTTP API
+
+    Args:
+        task_type: Type of test (vless, subscription, etc.)
+        request_data: Test parameters
+
+    Returns:
+        job_id from orchestrator
+    """
+    # Map task_type to orchestrator endpoint
+    endpoint_map = {
+        "vless": "/orchestrator/test/vless/async",
+        "subscription": "/orchestrator/test/subscription/async"
+    }
+
+    endpoint = endpoint_map.get(task_type)
+    if not endpoint:
+        raise ValueError(f"Unsupported task_type for orchestrator mode: {task_type}")
+
+    # Make HTTP request to localhost orchestrator
+    orchestrator_url = f"http://localhost:8000{endpoint}"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(orchestrator_url, json=request_data)
+        response.raise_for_status()
+
+        result = response.json()
+        job_id = result.get("job_id")
+
+        if not job_id:
+            raise ValueError(f"No job_id in orchestrator response: {result}")
+
+        return job_id
 
 
 def create_scheduled_test(
