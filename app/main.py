@@ -861,6 +861,70 @@ async def get_job_status(job_id: str):
 
     return job_data
 
+@app.get("/orchestrator/job/{job_id}/results")
+async def get_job_results(job_id: str):
+    """
+    Get aggregated results from parent job and all worker sub-jobs
+
+    - Fetches parent vless_test job
+    - Collects results from all worker sub-jobs
+    - Returns aggregated summary with all test results
+    """
+    job_manager = get_job_manager()
+    parent_job = job_manager.get_job(job_id)
+
+    if parent_job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+
+    # If this is not a vless_test job, just return the job data
+    if parent_job.get('job_type') != 'vless_test':
+        return parent_job
+
+    # Collect results from all worker sub-jobs
+    worker_results = []
+    submission_results = parent_job.get('result', {}).get('results', [])
+
+    for submission in submission_results:
+        worker_job_id = submission.get('worker_job_id')
+        worker_url = submission.get('worker_url')
+
+        # Fetch worker job data from Redis
+        worker_job = job_manager.get_job(worker_job_id)
+
+        if worker_job:
+            worker_results.append({
+                'worker_url': worker_url,
+                'worker_job_id': worker_job_id,
+                'status': worker_job.get('status'),
+                'test_result': worker_job.get('result'),
+                'error': worker_job.get('error')
+            })
+        else:
+            # Worker job not found (shouldn't happen)
+            worker_results.append({
+                'worker_url': worker_url,
+                'worker_job_id': worker_job_id,
+                'status': 'unknown',
+                'test_result': None,
+                'error': 'Worker job not found in Redis'
+            })
+
+    # Count successful tests
+    successful = sum(1 for r in worker_results
+                    if r.get('test_result', {}).get('success') == True)
+
+    # Return aggregated results
+    return {
+        'job_id': job_id,
+        'status': parent_job.get('status'),
+        'created_at': parent_job.get('created_at'),
+        'updated_at': parent_job.get('updated_at'),
+        'total_workers': len(worker_results),
+        'successful': successful,
+        'failed': len(worker_results) - successful,
+        'results': worker_results
+    }
+
 @app.post("/worker/job/vless")
 async def worker_process_vless_job(request: Dict, background_tasks: BackgroundTasks):
     """
